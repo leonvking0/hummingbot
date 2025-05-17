@@ -12,6 +12,9 @@ from hummingbot.connector.exchange.backpack import (
 from hummingbot.connector.exchange.backpack.backpack_api_order_book_data_source import (
     BackpackAPIOrderBookDataSource,
 )
+from hummingbot.connector.exchange.backpack.backpack_api_user_stream_data_source import (
+    BackpackAPIUserStreamDataSource,
+)
 from hummingbot.connector.exchange.backpack.backpack_auth import BackpackAuth
 from hummingbot.connector.exchange_py_base import ExchangePyBase
 from hummingbot.connector.trading_rule import TradingRule
@@ -19,6 +22,7 @@ from hummingbot.connector.utils import combine_to_hb_trading_pair
 from hummingbot.core.data_type.common import OrderType, TradeType
 from hummingbot.core.data_type.order_book_tracker_data_source import OrderBookTrackerDataSource
 from hummingbot.core.data_type.trade_fee import TradeFeeBase
+from hummingbot.core.utils.estimate_fee import build_trade_fee
 from hummingbot.core.data_type.in_flight_order import InFlightOrder, OrderState, OrderUpdate
 from hummingbot.core.data_type.user_stream_tracker_data_source import UserStreamTrackerDataSource
 from hummingbot.core.web_assistant.connections.data_types import RESTMethod
@@ -119,7 +123,13 @@ class BackpackExchange(ExchangePyBase):
         )
 
     def _create_user_stream_data_source(self) -> UserStreamTrackerDataSource:
-        raise NotImplementedError
+        return BackpackAPIUserStreamDataSource(
+            auth=self._auth,
+            trading_pairs=self._trading_pairs or [],
+            connector=self,
+            api_factory=self._web_assistants_factory,
+            domain=self.domain,
+        )
 
     def _create_user_stream_tracker(self):  # pragma: no cover - not implemented yet
         return None
@@ -273,3 +283,84 @@ class BackpackExchange(ExchangePyBase):
 
     def _trade_fee_schema(self) -> TradeFeeBase:
         return TradeFeeBase()  # Default zero fees
+
+    def _get_fee(
+        self,
+        base_currency: str,
+        quote_currency: str,
+        order_type: OrderType,
+        order_side: TradeType,
+        amount: Decimal,
+        price: Decimal = s_decimal_NaN,
+        is_maker: Optional[bool] = None,
+    ) -> TradeFeeBase:
+        is_maker = is_maker or (order_type is OrderType.LIMIT_MAKER)
+        return build_trade_fee(
+            exchange=self.name,
+            is_maker=is_maker,
+            base_currency=base_currency,
+            quote_currency=quote_currency,
+            order_type=order_type,
+            order_side=order_side,
+            amount=amount,
+            price=price,
+        )
+
+    def _is_order_not_found_during_cancelation_error(self, cancelation_exception: Exception) -> bool:
+        return "not found" in str(cancelation_exception).lower()
+
+    def _is_order_not_found_during_status_update_error(self, status_update_exception: Exception) -> bool:
+        return "not found" in str(status_update_exception).lower()
+
+    def _is_request_exception_related_to_time_synchronizer(self, request_exception: Exception):
+        return "timestamp" in str(request_exception).lower()
+
+    async def _update_trading_fees(self):
+        return
+
+    async def _user_stream_event_listener(self):
+        async for event_message in self._iter_user_event_queue():
+            try:
+                channel = event_message.get("channel")
+                if channel == "balances":
+                    balances = event_message.get("data") or []
+                    entries = balances if isinstance(balances, list) else [balances]
+                    for entry in entries:
+                        asset = entry.get("asset") or entry.get("currency") or entry.get("token")
+                        if asset is None:
+                            continue
+                        available = Decimal(str(entry.get("available") or entry.get("free") or 0))
+                        total = Decimal(str(entry.get("total") or entry.get("balance") or available))
+                        self._account_available_balances[asset] = available
+                        self._account_balances[asset] = total
+                elif channel == "orders":
+                    data = event_message.get("data") or {}
+                    client_order_id = str(data.get("clientOrderId") or data.get("client_id") or "")
+                    exchange_order_id = str(data.get("order_id") or data.get("id") or "")
+                    tracked_order = self._order_tracker.all_updatable_orders.get(client_order_id)
+                    if tracked_order is not None:
+                        status = str(data.get("status") or "").lower()
+                        state_map = {
+                            "new": OrderState.OPEN,
+                            "open": OrderState.OPEN,
+                            "pending": OrderState.PENDING_CREATE,
+                            "partially_filled": OrderState.PARTIALLY_FILLED,
+                            "filled": OrderState.FILLED,
+                            "canceled": OrderState.CANCELED,
+                            "cancelled": OrderState.CANCELED,
+                            "failed": OrderState.FAILED,
+                        }
+                        new_state = state_map.get(status, tracked_order.current_state)
+                        order_update = OrderUpdate(
+                            trading_pair=tracked_order.trading_pair,
+                            update_timestamp=self.current_timestamp,
+                            new_state=new_state,
+                            client_order_id=client_order_id,
+                            exchange_order_id=exchange_order_id,
+                        )
+                        self._order_tracker.process_order_update(order_update=order_update)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                self.logger().error("Unexpected error in user stream listener loop.", exc_info=True)
+                await self._sleep(5.0)
