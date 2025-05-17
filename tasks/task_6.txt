@@ -1,0 +1,12 @@
+# Task ID: 6
+# Title: Add Trading Rules and Order Book Tracking
+# Status: todo
+# Dependencies: 5
+# Priority: medium
+# Description: Parse market info to build TradingRule objects and create OrderBookTracker for Backpack markets.
+# Details:
+1. Fetch `/api/v1/markets` to determine minimum order size, price increments, and trading fees.
+2. Build `TradingRule` instances and store them in the exchange class.
+3. Implement `BackpackOrderBook` and integrate it with the OrderBookTracker.
+# Test Strategy:
+Write unit tests verifying trading rule parsing and order book tracker initialization using mocked API responses.

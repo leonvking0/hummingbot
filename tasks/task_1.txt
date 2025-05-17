@@ -1,0 +1,13 @@
+# Task ID: 1
+# Title: Set Up Backpack Connector Skeleton
+# Status: todo
+# Dependencies: none
+# Priority: high
+# Description: Create initial directory structure and placeholder modules for Backpack exchange connector.
+# Details:
+1. Create `hummingbot/connector/exchange/backpack_exchange/` directory.
+2. Add empty `__init__.py`, `backpack_exchange.py`, and `backpack_constants.py` modules.
+3. Register connector in `hummingbot/connector/__init__.py` for discovery.
+4. Update setup files to include the new package.
+# Test Strategy:
+Verify that the package builds without errors and Hummingbot can import the new connector module.

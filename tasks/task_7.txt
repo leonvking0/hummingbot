@@ -1,0 +1,12 @@
+# Task ID: 7
+# Title: Implement Error Handling and Reconnection Logic
+# Status: todo
+# Dependencies: 6
+# Priority: medium
+# Description: Add comprehensive error handling, rate limit backoff, and automatic reconnection for REST and WebSocket operations.
+# Details:
+1. Map Backpack API error codes to meaningful exceptions.
+2. Add retry wrappers with exponential backoff for REST calls.
+3. Implement WebSocket reconnection and heartbeat ping every 30 seconds.
+# Test Strategy:
+Simulate network drops and rate limit errors using mocks to ensure the connector recovers and logs appropriate warnings.

@@ -1,0 +1,12 @@
+# Task ID: 2
+# Title: Implement Backpack Authentication and Constants
+# Status: todo
+# Dependencies: 1
+# Priority: high
+# Description: Add Backpack authentication class to handle API key/secret signing and define exchange constants.
+# Details:
+1. Implement `BackpackAuth` class for HMAC-SHA256 signing for REST and WS requests.
+2. Add `backpack_constants.py` with endpoint URLs, time intervals, and other static values.
+3. Ensure timestamp and nonce generation follow Backpack API requirements.
+# Test Strategy:
+Write unit tests for signature generation and header construction using known examples from Backpack documentation.

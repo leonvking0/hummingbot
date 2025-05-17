@@ -1,0 +1,12 @@
+# Task ID: 3
+# Title: Develop Public Order Book Data Source
+# Status: todo
+# Dependencies: 2
+# Priority: high
+# Description: Implement BackpackAPIOrderBookDataSource to provide order book snapshots and incremental updates via WebSocket.
+# Details:
+1. Create `backpack_api_order_book_data_source.py` handling REST snapshot from `/api/v1/depth` and WS channels `depth.<symbol>` and `trades.<symbol>`.
+2. Maintain local order book using `OrderBook` and ensure sequence IDs are handled.
+3. Include automatic reconnection and snapshot reload when gaps are detected.
+# Test Strategy:
+Unit test snapshot retrieval and incremental update merging. Simulate missing updates to verify resubscription and snapshot refresh logic.

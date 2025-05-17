@@ -1,0 +1,12 @@
+# Task ID: 8
+# Title: Build Unit Test Suite and QA Scripts
+# Status: todo
+# Dependencies: 7
+# Priority: medium
+# Description: Develop tests covering connector functionality and create scripts for manual QA on Backpack testnet.
+# Details:
+1. Write unit tests for all connector components including auth, order book, order management, and user streams.
+2. Provide sample configuration files and scripts to run the connector against the Backpack testnet environment.
+3. Document how to execute the tests and interpret results.
+# Test Strategy:
+Ensure that `pytest` runs all new tests successfully and manual QA scripts complete without unhandled exceptions.
