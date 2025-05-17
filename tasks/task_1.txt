@@ -1,6 +1,6 @@
 # Task ID: 1
 # Title: Set Up Backpack Connector Skeleton
-# Status: todo
+# Status: done
 # Dependencies: none
 # Priority: high
 # Description: Create initial directory structure and placeholder modules for Backpack exchange connector.
