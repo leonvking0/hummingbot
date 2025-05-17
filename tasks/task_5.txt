@@ -1,6 +1,6 @@
 # Task ID: 5
 # Title: Implement Private User Stream Data Source
-# Status: todo
+# Status: done
 # Dependencies: 4
 # Priority: high
 # Description: Add BackpackAPIUserStreamDataSource to subscribe to authenticated WebSocket channels for order and balance updates.
