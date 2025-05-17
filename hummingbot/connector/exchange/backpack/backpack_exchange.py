@@ -1,6 +1,6 @@
 import asyncio
 from decimal import Decimal
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 from bidict import bidict
 
@@ -16,9 +16,10 @@ from hummingbot.connector.exchange.backpack.backpack_auth import BackpackAuth
 from hummingbot.connector.exchange_py_base import ExchangePyBase
 from hummingbot.connector.trading_rule import TradingRule
 from hummingbot.connector.utils import combine_to_hb_trading_pair
-from hummingbot.core.data_type.common import OrderType
+from hummingbot.core.data_type.common import OrderType, TradeType
 from hummingbot.core.data_type.order_book_tracker_data_source import OrderBookTrackerDataSource
 from hummingbot.core.data_type.trade_fee import TradeFeeBase
+from hummingbot.core.data_type.in_flight_order import InFlightOrder, OrderState, OrderUpdate
 from hummingbot.core.data_type.user_stream_tracker_data_source import UserStreamTrackerDataSource
 from hummingbot.core.web_assistant.connections.data_types import RESTMethod
 from hummingbot.core.web_assistant.web_assistants_factory import WebAssistantsFactory
@@ -170,18 +171,102 @@ class BackpackExchange(ExchangePyBase):
             })
         return parsed_trades
 
-    # Placeholder implementations for trading actions
-    async def _place_order(self, *args, **kwargs):
-        raise NotImplementedError
+    async def _place_order(
+        self,
+        order_id: str,
+        trading_pair: str,
+        amount: Decimal,
+        trade_type: TradeType,
+        order_type: OrderType,
+        price: Decimal,
+        **kwargs,
+    ) -> Tuple[str, float]:
+        side = "buy" if trade_type is TradeType.BUY else "sell"
+        type_str = "limit" if order_type.is_limit_type() else "market"
+        symbol = await self.exchange_symbol_associated_to_pair(trading_pair=trading_pair)
+        data = {
+            "clientOrderId": order_id,
+            "symbol": symbol,
+            "side": side,
+            "type": type_str,
+            "size": f"{amount:f}",
+        }
+        if order_type.is_limit_type():
+            data["price"] = f"{price:f}"
 
-    async def _place_cancel(self, *args, **kwargs):
-        raise NotImplementedError
+        result = await self._api_post(
+            path_url=CONSTANTS.ORDERS_PATH_URL,
+            data=data,
+            is_auth_required=True,
+        )
+
+        exchange_id = str(
+            result.get("order_id")
+            or result.get("id")
+            or result.get("data", {}).get("order_id")
+            or result.get("data", {}).get("id")
+        )
+        ts = (
+            float(result.get("ts") or result.get("timestamp") or result.get("data", {}).get("timestamp", 0))
+            / 1000
+        )
+        return exchange_id, ts
+
+    async def _place_cancel(self, order_id: str, tracked_order: InFlightOrder):
+        exchange_order_id = await tracked_order.get_exchange_order_id()
+        path_url = f"{CONSTANTS.ORDERS_PATH_URL}/{exchange_order_id}"
+        result = await self._api_delete(path_url=path_url, is_auth_required=True)
+        success = str(result.get("status") or result.get("result") or "").lower() in ("success", "ok", "")
+        return success
 
     async def _all_trade_updates_for_order(self, order):
         return []
 
     async def _update_balances(self):
-        pass
+        response = await self._api_get(path_url=CONSTANTS.BALANCE_PATH_URL, is_auth_required=True)
+        balances = response.get("balances") or response.get("data") or response
+
+        local_assets = set(self._account_balances.keys())
+        remote_assets = set()
+
+        for entry in balances:
+            asset = entry.get("asset") or entry.get("currency") or entry.get("token")
+            available = Decimal(str(entry.get("available") or entry.get("free") or entry.get("availableBalance") or entry.get("available_balance") or 0))
+            total = Decimal(str(entry.get("total") or entry.get("balance") or entry.get("totalBalance") or entry.get("walletBalance") or available))
+            self._account_available_balances[asset] = available
+            self._account_balances[asset] = total
+            remote_assets.add(asset)
+
+        for asset in local_assets.difference(remote_assets):
+            self._account_available_balances.pop(asset, None)
+            self._account_balances.pop(asset, None)
+
+    async def _request_order_status(self, tracked_order: InFlightOrder) -> OrderUpdate:
+        exchange_order_id = await tracked_order.get_exchange_order_id()
+        path_url = f"{CONSTANTS.ORDERS_PATH_URL}/{exchange_order_id}"
+        resp = await self._api_get(path_url=path_url, is_auth_required=True)
+
+        status = str(resp.get("status") or resp.get("data", {}).get("status") or "").lower()
+        state_map = {
+            "new": OrderState.OPEN,
+            "open": OrderState.OPEN,
+            "pending": OrderState.PENDING_CREATE,
+            "partially_filled": OrderState.PARTIALLY_FILLED,
+            "filled": OrderState.FILLED,
+            "canceled": OrderState.CANCELED,
+            "cancelled": OrderState.CANCELED,
+            "failed": OrderState.FAILED,
+        }
+        new_state = state_map.get(status, OrderState.OPEN)
+
+        return OrderUpdate(
+            client_order_id=tracked_order.client_order_id,
+            exchange_order_id=exchange_order_id,
+            trading_pair=tracked_order.trading_pair,
+            update_timestamp=self.current_timestamp,
+            new_state=new_state,
+        )
+
 
     async def _format_trading_rules(self, exchange_info: Dict[str, Any]) -> List[TradingRule]:
         return []

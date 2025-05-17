@@ -2,6 +2,7 @@ import asyncio
 import sys
 import types
 from unittest import TestCase
+from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock, patch
 
 # Create module stubs and mocks
@@ -70,22 +71,10 @@ class MockExchangeBase:
 
 sys.modules["hummingbot.connector.exchange_base"].ExchangeBase = MockExchangeBase
 
-# Patch BackpackExchange to avoid external dependencies
-with patch("hummingbot.connector.exchange.backpack.backpack_exchange.BackpackExchange", autospec=True) as mock_cls:
-    # Set up the mock class to return what we need for tests
-    mock_instance = mock_cls.return_value
-    mock_instance._initialize_trading_pair_symbols_from_exchange_info = MagicMock()
-    mock_instance.exchange_symbol_associated_to_pair = AsyncMock(return_value="BTC_USDT")
-    mock_instance._get_last_traded_price = AsyncMock(return_value=100.0)
-    mock_instance.fetch_trades = AsyncMock(return_value=[
-        {"price": 101.0, "amount": 1.0, "timestamp": 1700000000000, "side": "buy"},
-        {"price": 102.0, "amount": 2.0, "timestamp": 1700000001000, "side": "sell"},
-    ])
-    # Add the missing method
-    mock_instance._set_trading_pair_symbol_map = MagicMock()
-
-    # Import BackpackExchange for reference only
-    BackpackExchange = mock_cls
+from hummingbot.connector.exchange.backpack import backpack_constants as CONSTANTS, backpack_web_utils as web_utils
+from hummingbot.connector.exchange.backpack.backpack_exchange import BackpackExchange
+from hummingbot.core.data_type.common import OrderType, TradeType
+from hummingbot.core.data_type.in_flight_order import OrderState
 
 
 class BackpackExchangeTests(TestCase):
@@ -144,3 +133,44 @@ class BackpackExchangeTests(TestCase):
         self.assertEqual(2, len(trades))
         self.assertEqual(101.0, trades[0]["price"])
         self.assertEqual("sell", trades[1]["side"])
+
+    @patch.object(BackpackExchange, "_api_post", new_callable=AsyncMock)
+    @patch.object(BackpackExchange, "exchange_symbol_associated_to_pair", new_callable=AsyncMock)
+    def test_place_order(self, mock_pair, mock_post):
+        mock_pair.return_value = "BTC_USDT"
+        mock_post.return_value = {"order_id": "123", "ts": 1700000000000}
+        order_id, ts = self.async_run(
+            self.exchange._place_order(
+                "OID1",
+                "BTC-USDT",
+                Decimal("1"),
+                TradeType.BUY,
+                OrderType.LIMIT,
+                Decimal("100"),
+            )
+        )
+        self.assertEqual("123", order_id)
+        self.assertEqual(1700000000.0, ts)
+
+    @patch.object(BackpackExchange, "_api_delete", new_callable=AsyncMock)
+    def test_place_cancel(self, mock_delete):
+        order = MagicMock()
+        order.get_exchange_order_id = AsyncMock(return_value="111")
+        mock_delete.return_value = {"status": "success"}
+        result = self.async_run(self.exchange._place_cancel("OID1", order))
+        self.assertTrue(result)
+
+    @patch.object(BackpackExchange, "_api_get", new_callable=AsyncMock)
+    def test_request_order_status(self, mock_get):
+        order = MagicMock(client_order_id="OID1", trading_pair="BTC-USDT")
+        order.get_exchange_order_id = AsyncMock(return_value="111")
+        mock_get.return_value = {"status": "filled"}
+        order_update = self.async_run(self.exchange._request_order_status(order))
+        self.assertEqual(OrderState.FILLED, order_update.new_state)
+
+    @patch.object(BackpackExchange, "_api_get", new_callable=AsyncMock)
+    def test_update_balances(self, mock_get):
+        mock_get.return_value = {"data": [{"asset": "BTC", "available": "1", "total": "2"}]}
+        self.async_run(self.exchange._update_balances())
+        self.assertEqual(Decimal("1"), self.exchange.available_balances["BTC"])
+        self.assertEqual(Decimal("2"), self.exchange.get_balance("BTC"))

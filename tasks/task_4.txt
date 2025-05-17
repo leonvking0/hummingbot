@@ -1,6 +1,6 @@
 # Task ID: 4
 # Title: Implement Order and Account Management
-# Status: todo
+# Status: done
 # Dependencies: 3
 # Priority: high
 # Description: Build REST methods in BackpackExchange class for placing, canceling, and querying orders, along with balance retrieval.
