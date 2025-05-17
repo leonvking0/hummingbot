@@ -1,0 +1,12 @@
+# Task ID: 4
+# Title: Implement Order and Account Management
+# Status: todo
+# Dependencies: 3
+# Priority: high
+# Description: Build REST methods in BackpackExchange class for placing, canceling, and querying orders, along with balance retrieval.
+# Details:
+1. Implement `place_order`, `cancel_order`, `get_order_status`, and `update_balances` methods using Backpack REST API endpoints.
+2. Integrate with `BackpackAuth` for signing and with `async_throttle` for rate limits.
+3. Use `ClientOrderTracker` to reconcile local and exchange order states.
+# Test Strategy:
+Write integration tests using Backpack testnet credentials to confirm order placement and cancellation flows.

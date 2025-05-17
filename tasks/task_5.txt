@@ -1,0 +1,12 @@
+# Task ID: 5
+# Title: Implement Private User Stream Data Source
+# Status: todo
+# Dependencies: 4
+# Priority: high
+# Description: Add BackpackAPIUserStreamDataSource to subscribe to authenticated WebSocket channels for order and balance updates.
+# Details:
+1. Authenticate WebSocket connection using `BackpackAuth` and subscribe to `orders` and `balances` streams.
+2. Parse incoming messages to update order states and wallet balances.
+3. Handle connection keepalive and reconnection logic with exponential backoff.
+# Test Strategy:
+Unit test message parsing with recorded WS payloads and verify local state updates when orders are filled or canceled.
