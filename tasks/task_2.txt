@@ -1,6 +1,6 @@
 # Task ID: 2
 # Title: Implement Backpack Authentication and Constants
-# Status: todo
+# Status: done
 # Dependencies: 1
 # Priority: high
 # Description: Add Backpack authentication class to handle API key/secret signing and define exchange constants.
