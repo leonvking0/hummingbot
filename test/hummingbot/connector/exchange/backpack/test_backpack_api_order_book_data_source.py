@@ -6,8 +6,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from aioresponses import aioresponses
 
-from hummingbot.connector.exchange.backpack_exchange import backpack_constants as CONSTANTS
-from hummingbot.connector.exchange.backpack_exchange.backpack_api_order_book_data_source import (
+from hummingbot.connector.exchange.backpack import backpack_constants as CONSTANTS
+from hummingbot.connector.exchange.backpack.backpack_api_order_book_data_source import (
     BackpackAPIOrderBookDataSource,
 )
 from hummingbot.connector.test_support.network_mocking_assistant import NetworkMockingAssistant

@@ -5,14 +5,14 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 from bidict import bidict
 
 from hummingbot.connector.constants import s_decimal_NaN
-from hummingbot.connector.exchange.backpack_exchange import (
+from hummingbot.connector.exchange.backpack import (
     backpack_constants as CONSTANTS,
     backpack_web_utils as web_utils,
 )
-from hummingbot.connector.exchange.backpack_exchange.backpack_api_order_book_data_source import (
+from hummingbot.connector.exchange.backpack.backpack_api_order_book_data_source import (
     BackpackAPIOrderBookDataSource,
 )
-from hummingbot.connector.exchange.backpack_exchange.backpack_auth import BackpackAuth
+from hummingbot.connector.exchange.backpack.backpack_auth import BackpackAuth
 from hummingbot.connector.exchange_py_base import ExchangePyBase
 from hummingbot.connector.trading_rule import TradingRule
 from hummingbot.connector.utils import combine_to_hb_trading_pair

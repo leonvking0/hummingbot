@@ -71,7 +71,7 @@ class MockExchangeBase:
 sys.modules["hummingbot.connector.exchange_base"].ExchangeBase = MockExchangeBase
 
 # Patch BackpackExchange to avoid external dependencies
-with patch("hummingbot.connector.exchange.backpack_exchange.backpack_exchange.BackpackExchange", autospec=True) as mock_cls:
+with patch("hummingbot.connector.exchange.backpack.backpack_exchange.BackpackExchange", autospec=True) as mock_cls:
     # Set up the mock class to return what we need for tests
     mock_instance = mock_cls.return_value
     mock_instance._initialize_trading_pair_symbols_from_exchange_info = MagicMock()
