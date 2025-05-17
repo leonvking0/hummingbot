@@ -1,6 +1,6 @@
 # Task ID: 3
 # Title: Develop Public Order Book Data Source
-# Status: todo
+# Status: done
 # Dependencies: 2
 # Priority: high
 # Description: Implement BackpackAPIOrderBookDataSource to provide order book snapshots and incremental updates via WebSocket.
