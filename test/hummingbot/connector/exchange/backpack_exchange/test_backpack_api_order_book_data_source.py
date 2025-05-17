@@ -5,7 +5,6 @@ from test.isolated_asyncio_wrapper_test_case import IsolatedAsyncioWrapperTestCa
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from aioresponses import aioresponses
-from bidict import bidict
 
 from hummingbot.connector.exchange.backpack_exchange import backpack_constants as CONSTANTS
 from hummingbot.connector.exchange.backpack_exchange.backpack_api_order_book_data_source import (
@@ -32,7 +31,13 @@ class BackpackAPIOrderBookDataSourceTests(IsolatedAsyncioWrapperTestCase):
         self.listening_task = None
         self.mocking_assistant = NetworkMockingAssistant()
 
-        throttler = AsyncThrottler(CONSTANTS.RATE_LIMITS)
+        # Add ORDER_BOOK_PATH_URL to rate limits for testing
+        self.rate_limits = CONSTANTS.RATE_LIMITS.copy()
+        self.rate_limits.append(
+            CONSTANTS.RateLimit(limit_id=CONSTANTS.ORDER_BOOK_PATH_URL, limit=10, time_interval=1)
+        )
+
+        throttler = AsyncThrottler(self.rate_limits)
         self.api_factory = WebAssistantsFactory(throttler=throttler)
 
         self.connector = MagicMock()
@@ -109,5 +114,3 @@ class BackpackAPIOrderBookDataSourceTests(IsolatedAsyncioWrapperTestCase):
         msg = queue.get_nowait()
         self.assertEqual(OrderBookMessageType.DIFF, msg.type)
         self.assertEqual(1700000000, msg.update_id)
-
-

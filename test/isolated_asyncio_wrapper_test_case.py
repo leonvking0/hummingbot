@@ -40,7 +40,7 @@ def async_to_sync(func: Callable[..., Coroutine[Any, Any, T]]) -> Callable[..., 
     @functools.wraps(func)
     def wrapper(*args: Any, **kwargs: Any) -> T:
         try:
-            loop: asyncio.AbstractEventLoop = asyncio.get_event_loop()
+            loop: asyncio.AbstractEventLoop = asyncio.get_running_loop()
         except RuntimeError:
             return asyncio.run(func(*args, **kwargs))
 
@@ -71,11 +71,10 @@ class IsolatedAsyncioWrapperTestCase(unittest.IsolatedAsyncioTestCase):
     def setUpClass(cls) -> None:
         # Save the current event loop
         try:
-            # This will trigger a RuntimeError if no event loop is running or no event loop is set.
-            # Meaning, set_event_loop(None) has been called.
-            cls.main_event_loop = asyncio.get_event_loop()
+            # Try to get the running loop first (preferred method in newer Python)
+            cls.main_event_loop = asyncio.get_running_loop()
         except RuntimeError:
-            # If no event loop exists, create one
+            # If no running loop exists, create one and set it
             cls.main_event_loop = asyncio.new_event_loop()
             asyncio.set_event_loop(cls.main_event_loop)
         assert cls.main_event_loop is not None
@@ -92,7 +91,8 @@ class IsolatedAsyncioWrapperTestCase(unittest.IsolatedAsyncioTestCase):
             asyncio.set_event_loop(self.main_event_loop)
             assert asyncio.get_event_loop() is self.main_event_loop
         else:
-            asyncio.set_event_loop(asyncio.new_event_loop())
+            new_loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(new_loop)
 
     @classmethod
     def tearDownClass(cls) -> None:
@@ -102,7 +102,8 @@ class IsolatedAsyncioWrapperTestCase(unittest.IsolatedAsyncioTestCase):
         if cls.main_event_loop is not None and not cls.main_event_loop.is_closed():
             asyncio.set_event_loop(cls.main_event_loop)
         else:
-            asyncio.set_event_loop(asyncio.new_event_loop())
+            new_loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(new_loop)
         assert asyncio.get_event_loop() is not None
 
     def run_async_with_timeout(self, coroutine: Awaitable, timeout: float = 1.0) -> Any:
@@ -173,7 +174,7 @@ class LocalClassEventLoopWrapperTestCase(unittest.TestCase):
     def setUpClass(cls) -> None:
         super().setUpClass()
         try:
-            cls.main_event_loop = asyncio.get_event_loop()
+            cls.main_event_loop = asyncio.get_running_loop()
         except RuntimeError:
             cls.main_event_loop = asyncio.new_event_loop()
 
@@ -237,7 +238,7 @@ class LocalTestEventLoopWrapperTestCase(unittest.TestCase):
     def setUpClass(cls) -> None:
         super().setUpClass()
         try:
-            cls.main_event_loop = asyncio.get_event_loop()
+            cls.main_event_loop = asyncio.get_running_loop()
         except RuntimeError:
             cls.main_event_loop = None
 
