@@ -23,7 +23,7 @@ def is_exchange_information_valid(exchange_info: Dict[str, Any]) -> bool:
 
 
 class BackpackConfigMap(BaseConnectorConfigMap):
-    connector: str = "backpack_exchange"
+    connector: str = "backpack"
     backpack_api_key: SecretStr = Field(
         default=..., 
         json_schema_extra={
@@ -43,7 +43,7 @@ class BackpackConfigMap(BaseConnectorConfigMap):
         }
     )
 
-    model_config = ConfigDict(title="backpack_exchange")
+    model_config = ConfigDict(title="backpack")
 
 
 KEYS = BackpackConfigMap.model_construct()

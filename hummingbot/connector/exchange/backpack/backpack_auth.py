@@ -4,7 +4,7 @@ import hmac
 import hashlib
 from typing import Any, Dict, Optional
 
-from hummingbot.connector.exchange.backpack_exchange import backpack_constants as CONSTANTS
+from hummingbot.connector.exchange.backpack import backpack_constants as CONSTANTS
 from hummingbot.connector.time_synchronizer import TimeSynchronizer
 from hummingbot.core.web_assistant.auth import AuthBase
 from hummingbot.core.web_assistant.connections.data_types import RESTRequest, WSRequest, RESTMethod

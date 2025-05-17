@@ -5,7 +5,7 @@ from typing import Awaitable
 from unittest import TestCase
 from unittest.mock import MagicMock
 
-from hummingbot.connector.exchange.backpack_exchange.backpack_auth import BackpackAuth
+from hummingbot.connector.exchange.backpack.backpack_auth import BackpackAuth
 from hummingbot.core.web_assistant.connections.data_types import RESTMethod, RESTRequest, WSJSONRequest
 
 

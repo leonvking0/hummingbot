@@ -1,1 +1,1 @@
-import hummingbot.connector.exchange.backpack_exchange  # noqa: F401
+import hummingbot.connector.exchange.backpack  # noqa: F401
