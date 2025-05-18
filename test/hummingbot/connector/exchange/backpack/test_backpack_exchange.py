@@ -5,6 +5,8 @@ from decimal import Decimal
 from unittest import TestCase
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from hummingbot.client.config.client_config_map import ClientConfigMap
+from hummingbot.client.config.config_helpers import ClientConfigAdapter
 from hummingbot.connector.exchange.backpack.backpack_exchange import BackpackExchange
 from hummingbot.core.data_type.common import OrderType, TradeType
 from hummingbot.core.data_type.in_flight_order import OrderState
@@ -78,10 +80,7 @@ sys.modules["hummingbot.connector.exchange_base"].ExchangeBase = MockExchangeBas
 
 class BackpackExchangeTests(TestCase):
     def setUp(self):
-        class DummyConfig:
-            rate_limits_share_pct = Decimal("1.0")
-
-        self.client_config_map = DummyConfig()
+        self.client_config_map = ClientConfigAdapter(ClientConfigMap())
         self.exchange = BackpackExchange(
             client_config_map=self.client_config_map,
             backpack_api_key="key",
@@ -175,7 +174,11 @@ class BackpackExchangeTests(TestCase):
         self.assertEqual(Decimal("2"), self.exchange.get_balance("BTC"))
 
     @patch.object(BackpackExchange, "_api_get", new_callable=AsyncMock)
-    def test_update_trading_rules(self, mock_get):
+    @patch.object(BackpackExchange, "trading_pair_associated_to_exchange_symbol")
+    def test_update_trading_rules(self, mock_trading_pair_associated, mock_get):
+        # Mock the trading pair association response
+        mock_trading_pair_associated.return_value = "BTC-USDT"
+
         mock_get.return_value = {
             "markets": [
                 {
