@@ -61,16 +61,20 @@ async def get_current_server_time(throttler: Optional[AsyncThrottler] = None) ->
         throttler_limit_id=CONSTANTS.SERVER_TIME_PATH_URL,
     )
 
-    # Handle text response
-    if isinstance(response, str):
+    # Handle response object
+    try:
+        # Try to parse as JSON
+        response_data = await response.json()
+        server_time = float(response_data.get("serverTime") or response_data.get("time") or response_data.get("ts", 0))
+        if server_time > 0:
+            return server_time
+    except Exception:
+        # If JSON parsing fails, try text
         try:
-            # Try to convert string directly to float
-            return float(response.strip())
+            response_text = await response.text()
+            # Try to convert text directly to float
+            return float(response_text.strip())
         except ValueError:
-            # If conversion fails, log and use current time
+            # If all fails, use local time
             import time
             return time.time() * 1000
-
-    # Handle JSON response
-    server_time = float(response.get("serverTime") or response.get("time") or response.get("ts"))
-    return server_time
