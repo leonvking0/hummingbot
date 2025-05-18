@@ -69,12 +69,20 @@ class BackpackAPIUserStreamDataSource(UserStreamTrackerDataSource):
             raise
 
     async def _process_websocket_messages(self, websocket_assistant: WSAssistant, queue: asyncio.Queue):
-        async for ws_response in websocket_assistant.iter_messages():
-            data = ws_response.data
-            if data is not None:
-                await self._process_event_message(
-                    event_message=data, queue=queue, websocket_assistant=websocket_assistant
+        while True:
+            try:
+                seconds_until_next_ping = (
+                    CONSTANTS.WS_HEARTBEAT_TIME_INTERVAL
+                    - (self._time() - self._last_ws_message_sent_timestamp)
                 )
+                await asyncio.wait_for(
+                    super()._process_websocket_messages(
+                        websocket_assistant=websocket_assistant, queue=queue
+                    ),
+                    timeout=seconds_until_next_ping,
+                )
+            except asyncio.TimeoutError:
+                await self._send_ping(websocket_assistant)
 
     async def _process_event_message(
         self, event_message: Dict[str, Any], queue: asyncio.Queue, websocket_assistant: WSAssistant
@@ -87,6 +95,7 @@ class BackpackAPIUserStreamDataSource(UserStreamTrackerDataSource):
         channel = event_message.get("channel")
         if channel in ("orders", "balances"):
             queue.put_nowait(event_message)
+        self._last_ws_message_sent_timestamp = self._time()
 
     async def _send_ping(self, websocket_assistant: WSAssistant):
         ping_payload = {"op": "ping"}

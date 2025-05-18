@@ -26,6 +26,19 @@ BALANCE_PATH_URL = "/api/v1/balances"
 # Websocket constants
 WS_HEARTBEAT_TIME_INTERVAL = 30
 
+# Common API error codes
+RATE_LIMIT_ERROR_CODE = 429
+AUTHENTICATION_ERROR_CODE = 401
+ORDER_NOT_FOUND_ERROR_CODE = 404
+
+# Mapping of API error codes to connector exceptions. Values are names so the
+# exchange class can raise meaningful errors when possible.
+ERROR_CODE_MAPPING = {
+    RATE_LIMIT_ERROR_CODE: "RateLimitError",
+    AUTHENTICATION_ERROR_CODE: "AuthenticationError",
+    ORDER_NOT_FOUND_ERROR_CODE: "OrderNotFound",
+}
+
 # Rate limits (placeholder values)
 RATE_LIMITS = [
     RateLimit(limit_id="REST", limit=100, time_interval=1),

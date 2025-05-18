@@ -32,6 +32,8 @@ class BackpackAPIOrderBookDataSource(OrderBookTrackerDataSource):
         self._channel_associated_to_pair: Dict[str, str] = {}
         # use custom order book class
         self.order_book_create_function = lambda: BackpackOrderBook()
+        self._reconnect_delay = 1
+        self._last_ws_message_sent_timestamp = 0
 
     async def get_last_traded_prices(self,
                                      trading_pairs: List[str],
@@ -68,6 +70,7 @@ class BackpackAPIOrderBookDataSource(OrderBookTrackerDataSource):
             ws_url=CONSTANTS.WSS_PUBLIC_URL,
             ping_timeout=CONSTANTS.WS_HEARTBEAT_TIME_INTERVAL,
         )
+        self._reconnect_delay = 1
         return ws
 
     async def _subscribe_channels(self, ws: WSAssistant):
@@ -81,6 +84,7 @@ class BackpackAPIOrderBookDataSource(OrderBookTrackerDataSource):
                 self._channel_associated_to_pair[f"trades.{symbol}"] = trading_pair
                 self._channel_associated_to_pair[f"depth.{symbol}"] = trading_pair
             self.logger().info("Subscribed to public order book and trade channels...")
+            self._last_ws_message_sent_timestamp = self._time()
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -89,6 +93,21 @@ class BackpackAPIOrderBookDataSource(OrderBookTrackerDataSource):
                 exc_info=True,
             )
             raise
+
+    async def _process_websocket_messages(self, websocket_assistant: WSAssistant):
+        while True:
+            try:
+                seconds_until_next_ping = (
+                    CONSTANTS.WS_HEARTBEAT_TIME_INTERVAL
+                    - (self._time() - self._last_ws_message_sent_timestamp)
+                )
+                await asyncio.wait_for(
+                    super()._process_websocket_messages(websocket_assistant=websocket_assistant),
+                    timeout=seconds_until_next_ping,
+                )
+            except asyncio.TimeoutError:
+                await websocket_assistant.ping()
+                self._last_ws_message_sent_timestamp = self._time()
 
     async def _parse_trade_message(self, raw_message: Dict[str, Any], message_queue: asyncio.Queue):
         channel = raw_message.get("channel")
@@ -141,3 +160,11 @@ class BackpackAPIOrderBookDataSource(OrderBookTrackerDataSource):
         if channel.startswith("depth."):
             return self._diff_messages_queue_key
         return ""
+
+    async def _on_order_stream_interruption(self, websocket_assistant: Optional[WSAssistant] = None):
+        await super()._on_order_stream_interruption(websocket_assistant=websocket_assistant)
+        await self._sleep(self._reconnect_delay)
+        self._reconnect_delay = min(self._reconnect_delay * 2, 60)
+
+    def _time(self) -> float:
+        return time.time()
