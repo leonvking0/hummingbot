@@ -1,9 +1,13 @@
 import asyncio
 import sys
 import types
-from unittest import TestCase
 from decimal import Decimal
+from unittest import TestCase
 from unittest.mock import AsyncMock, MagicMock, patch
+
+from hummingbot.connector.exchange.backpack.backpack_exchange import BackpackExchange
+from hummingbot.core.data_type.common import OrderType, TradeType
+from hummingbot.core.data_type.in_flight_order import OrderState
 
 # Create module stubs and mocks
 pandas_stub = types.ModuleType("pandas")
@@ -71,16 +75,11 @@ class MockExchangeBase:
 
 sys.modules["hummingbot.connector.exchange_base"].ExchangeBase = MockExchangeBase
 
-from hummingbot.connector.exchange.backpack import backpack_constants as CONSTANTS, backpack_web_utils as web_utils
-from hummingbot.connector.exchange.backpack.backpack_exchange import BackpackExchange
-from hummingbot.core.data_type.common import OrderType, TradeType
-from hummingbot.core.data_type.in_flight_order import OrderState
-
 
 class BackpackExchangeTests(TestCase):
     def setUp(self):
         class DummyConfig:
-            rate_limits_share_pct = 1.0
+            rate_limits_share_pct = Decimal("1.0")
 
         self.client_config_map = DummyConfig()
         self.exchange = BackpackExchange(
@@ -113,7 +112,7 @@ class BackpackExchangeTests(TestCase):
         self.exchange._set_trading_pair_symbol_map(FakeBidict({"BTC_USDT": "BTC-USDT"}))
         with patch.object(self.exchange, "_api_get", new=AsyncMock(return_value={"data": [{"p": "100"}]})):
             price = self.async_run(self.exchange._get_last_traded_price("BTC-USDT"))
-        self.assertEqual(100.0, price)
+        self.assertEqual(Decimal("100"), price)
 
     def test_fetch_trades(self):
         class FakeBidict(dict):
@@ -131,7 +130,7 @@ class BackpackExchangeTests(TestCase):
         with patch.object(self.exchange, "_api_get", new=AsyncMock(return_value=response)):
             trades = self.async_run(self.exchange.fetch_trades("BTC-USDT", limit=2))
         self.assertEqual(2, len(trades))
-        self.assertEqual(101.0, trades[0]["price"])
+        self.assertEqual(Decimal("101"), trades[0]["price"])
         self.assertEqual("sell", trades[1]["side"])
 
     @patch.object(BackpackExchange, "_api_post", new_callable=AsyncMock)
@@ -150,7 +149,7 @@ class BackpackExchangeTests(TestCase):
             )
         )
         self.assertEqual("123", order_id)
-        self.assertEqual(1700000000.0, ts)
+        self.assertEqual(Decimal("1700000000"), ts)
 
     @patch.object(BackpackExchange, "_api_delete", new_callable=AsyncMock)
     def test_place_cancel(self, mock_delete):

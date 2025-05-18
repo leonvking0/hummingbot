@@ -4,28 +4,20 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 from bidict import bidict
 
-from hummingbot.connector.constants import s_decimal_NaN
-from hummingbot.connector.exchange.backpack import (
-    backpack_constants as CONSTANTS,
-    backpack_web_utils as web_utils,
-)
-from hummingbot.connector.exchange.backpack.backpack_api_order_book_data_source import (
-    BackpackAPIOrderBookDataSource,
-)
-from hummingbot.connector.exchange.backpack.backpack_api_user_stream_data_source import (
-    BackpackAPIUserStreamDataSource,
-)
+from hummingbot.connector.constants import s_decimal_0, s_decimal_NaN
+from hummingbot.connector.exchange.backpack import backpack_constants as CONSTANTS, backpack_web_utils as web_utils
+from hummingbot.connector.exchange.backpack.backpack_api_order_book_data_source import BackpackAPIOrderBookDataSource
+from hummingbot.connector.exchange.backpack.backpack_api_user_stream_data_source import BackpackAPIUserStreamDataSource
 from hummingbot.connector.exchange.backpack.backpack_auth import BackpackAuth
 from hummingbot.connector.exchange_py_base import ExchangePyBase
 from hummingbot.connector.trading_rule import TradingRule
 from hummingbot.connector.utils import combine_to_hb_trading_pair
 from hummingbot.core.data_type.common import OrderType, TradeType
+from hummingbot.core.data_type.in_flight_order import InFlightOrder, OrderState, OrderUpdate
 from hummingbot.core.data_type.order_book_tracker_data_source import OrderBookTrackerDataSource
 from hummingbot.core.data_type.trade_fee import TradeFeeBase
-from hummingbot.core.utils.estimate_fee import build_trade_fee
-from hummingbot.core.data_type.in_flight_order import InFlightOrder, OrderState, OrderUpdate
 from hummingbot.core.data_type.user_stream_tracker_data_source import UserStreamTrackerDataSource
-from hummingbot.core.web_assistant.connections.data_types import RESTMethod
+from hummingbot.core.utils.estimate_fee import build_trade_fee
 from hummingbot.core.web_assistant.web_assistants_factory import WebAssistantsFactory
 
 if TYPE_CHECKING:
@@ -51,6 +43,9 @@ class BackpackExchange(ExchangePyBase):
         self._domain = domain
         self._trading_required = trading_required
         self._trading_pairs = trading_pairs
+        self._account_balances = {}
+        self._account_available_balances = {}
+        self._trading_pair_symbol_map = {}
         super().__init__(client_config_map)
 
     @property
@@ -105,6 +100,17 @@ class BackpackExchange(ExchangePyBase):
     def is_trading_required(self) -> bool:
         return self._trading_required
 
+    @property
+    def current_timestamp(self) -> float:
+        return self._time_synchronizer.time()
+
+    @property
+    def available_balances(self) -> Dict[str, Decimal]:
+        return self._account_available_balances
+
+    def get_balance(self, currency: str) -> Decimal:
+        return self._account_balances.get(currency, s_decimal_0)
+
     def supported_order_types(self):
         return [OrderType.LIMIT, OrderType.LIMIT_MAKER, OrderType.MARKET]
 
@@ -140,6 +146,9 @@ class BackpackExchange(ExchangePyBase):
     def _is_user_stream_initialized(self):
         return True
 
+    def _set_order_book_tracker(self, tracker):
+        self._order_book_tracker = tracker
+
     def _initialize_trading_pair_symbols_from_exchange_info(self, exchange_info: Dict[str, Any]):
         mapping = bidict()
         markets = exchange_info.get("markets") or exchange_info.get("data") or []
@@ -155,14 +164,14 @@ class BackpackExchange(ExchangePyBase):
                 mapping[f"{base}_{quote}"] = trading_pair
         self._set_trading_pair_symbol_map(mapping)
 
-    async def _get_last_traded_price(self, trading_pair: str) -> float:
+    async def _get_last_traded_price(self, trading_pair: str) -> Decimal:
         params = {"symbol": await self.exchange_symbol_associated_to_pair(trading_pair=trading_pair)}
         resp = await self._api_get(path_url=CONSTANTS.TRADES_PATH_URL, params=params)
         trades = resp.get("data") or resp.get("trades") or resp
         if isinstance(trades, list) and len(trades) > 0:
-            price = float(trades[0].get("p") or trades[0].get("price"))
+            price = Decimal(str(trades[0].get("p") or trades[0].get("price")))
             return price
-        return float("nan")
+        return s_decimal_NaN
 
     async def fetch_trades(self, trading_pair: str, limit: int = 50) -> List[Dict[str, Any]]:
         params = {
@@ -174,9 +183,9 @@ class BackpackExchange(ExchangePyBase):
         parsed_trades = []
         for trade in trades:
             parsed_trades.append({
-                "price": float(trade.get("p") or trade.get("price")),
-                "amount": float(trade.get("q") or trade.get("size")),
-                "timestamp": float(trade.get("ts") or trade.get("t")) / 1000,
+                "price": Decimal(str(trade.get("p") or trade.get("price"))),
+                "amount": Decimal(str(trade.get("q") or trade.get("size"))),
+                "timestamp": Decimal(str(trade.get("ts") or trade.get("t"))) / Decimal("1000"),
                 "side": str(trade.get("side", "buy")).lower(),
             })
         return parsed_trades
@@ -190,7 +199,7 @@ class BackpackExchange(ExchangePyBase):
         order_type: OrderType,
         price: Decimal,
         **kwargs,
-    ) -> Tuple[str, float]:
+    ) -> Tuple[str, Decimal]:
         side = "buy" if trade_type is TradeType.BUY else "sell"
         type_str = "limit" if order_type.is_limit_type() else "market"
         symbol = await self.exchange_symbol_associated_to_pair(trading_pair=trading_pair)
@@ -216,10 +225,9 @@ class BackpackExchange(ExchangePyBase):
             or result.get("data", {}).get("order_id")
             or result.get("data", {}).get("id")
         )
-        ts = (
-            float(result.get("ts") or result.get("timestamp") or result.get("data", {}).get("timestamp", 0))
-            / 1000
-        )
+        ts = Decimal(str(
+            result.get("ts") or result.get("timestamp") or result.get("data", {}).get("timestamp", 0)
+        )) / Decimal("1000")
         return exchange_id, ts
 
     async def _place_cancel(self, order_id: str, tracked_order: InFlightOrder):
@@ -277,9 +285,35 @@ class BackpackExchange(ExchangePyBase):
             new_state=new_state,
         )
 
-
     async def _format_trading_rules(self, exchange_info: Dict[str, Any]) -> List[TradingRule]:
-        return []
+        """Format the trading rules for the exchange."""
+        trading_rules = []
+        markets = exchange_info.get("markets") or exchange_info.get("data") or []
+
+        for market in markets:
+            try:
+                trading_pair = await self.trading_pair_associated_to_exchange_symbol(
+                    symbol=market.get("id") or market.get("symbol") or market.get("name"))
+
+                # Extract or set default values for trading rules
+                min_order_size = Decimal(str(market.get("minOrderSize", "0.0001")))
+                min_price_increment = Decimal(str(market.get("tickSize", "0.00001")))
+                min_base_amount_increment = Decimal(str(market.get("stepSize", "0.0001")))
+                min_notional_size = Decimal(str(market.get("minNotional", "1")))
+
+                trading_rules.append(
+                    TradingRule(
+                        trading_pair=trading_pair,
+                        min_order_size=min_order_size,
+                        min_price_increment=min_price_increment,
+                        min_base_amount_increment=min_base_amount_increment,
+                        min_notional_size=min_notional_size
+                    )
+                )
+            except Exception:
+                self.logger().exception(f"Error parsing trading rule for {market.get('id', 'unknown')}. Skipping.")
+
+        return trading_rules
 
     def _trade_fee_schema(self) -> TradeFeeBase:
         return TradeFeeBase()  # Default zero fees
@@ -364,3 +398,11 @@ class BackpackExchange(ExchangePyBase):
             except Exception:
                 self.logger().error("Unexpected error in user stream listener loop.", exc_info=True)
                 await self._sleep(5.0)
+
+    def _set_trading_pair_symbol_map(self, mapping: bidict):
+        self._trading_pair_symbol_map = mapping
+
+    async def exchange_symbol_associated_to_pair(self, trading_pair: str) -> str:
+        if trading_pair not in self._trading_pair_symbol_map.inverse:
+            raise ValueError(f"Trading pair {trading_pair} not supported by this connector.")
+        return self._trading_pair_symbol_map.inverse[trading_pair]
