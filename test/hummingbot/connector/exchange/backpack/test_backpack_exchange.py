@@ -173,3 +173,34 @@ class BackpackExchangeTests(TestCase):
         self.async_run(self.exchange._update_balances())
         self.assertEqual(Decimal("1"), self.exchange.available_balances["BTC"])
         self.assertEqual(Decimal("2"), self.exchange.get_balance("BTC"))
+
+    @patch.object(BackpackExchange, "_api_get", new_callable=AsyncMock)
+    def test_update_trading_rules(self, mock_get):
+        mock_get.return_value = {
+            "markets": [
+                {
+                    "id": "BTC_USDT",
+                    "baseAsset": "BTC",
+                    "quoteAsset": "USDT",
+                    "minOrderSize": "0.001",
+                    "tickSize": "0.01",
+                    "stepSize": "0.0001",
+                    "minNotional": "5",
+                }
+            ]
+        }
+
+        self.async_run(self.exchange._update_trading_rules())
+
+        rule = self.exchange._trading_rules.get("BTC-USDT")
+        self.assertIsNotNone(rule)
+        self.assertEqual(Decimal("0.001"), rule.min_order_size)
+        self.assertEqual(Decimal("0.01"), rule.min_price_increment)
+        self.assertEqual(Decimal("0.0001"), rule.min_base_amount_increment)
+        self.assertEqual(Decimal("5"), rule.min_notional_size)
+
+    def test_order_book_tracker_uses_custom_order_book(self):
+        order_book = self.exchange._orderbook_ds.order_book_create_function()
+        from hummingbot.connector.exchange.backpack.backpack_order_book import BackpackOrderBook
+
+        self.assertIsInstance(order_book, BackpackOrderBook)

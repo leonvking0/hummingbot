@@ -1,6 +1,6 @@
 # Task ID: 6
 # Title: Add Trading Rules and Order Book Tracking
-# Status: todo
+# Status: done
 # Dependencies: 5
 # Priority: medium
 # Description: Parse market info to build TradingRule objects and create OrderBookTracker for Backpack markets.
