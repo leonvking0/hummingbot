@@ -1,6 +1,6 @@
 # Task ID: 8
 # Title: Build Unit Test Suite and QA Scripts
-# Status: todo
+# Status: done
 # Dependencies: 7
 # Priority: medium
 # Description: Develop tests covering connector functionality and create scripts for manual QA on Backpack testnet.
