@@ -154,12 +154,14 @@ class BackpackExchange(ExchangePyBase):
         mapping = bidict()
         markets = []
 
-        # Handle case where exchange_info is a list
+        # Handle case where exchange_info is a list or dict
         if isinstance(exchange_info, list):
             markets = exchange_info
-        else:
+        elif isinstance(exchange_info, dict):
             # Original behavior for dictionary response
             markets = exchange_info.get("markets") or exchange_info.get("data") or []
+        else:
+            raise IOError(f"Unexpected response from markets endpoint: {exchange_info}")
 
         for market in markets:
             symbol = market.get("id") or market.get("symbol") or market.get("name")
@@ -251,7 +253,11 @@ class BackpackExchange(ExchangePyBase):
 
     async def _update_balances(self):
         response = await self._api_get(path_url=CONSTANTS.BALANCE_PATH_URL, is_auth_required=True)
-        balances = response.get("balances") or response.get("data") or response
+        if not isinstance(response, dict):
+            raise IOError(f"Unexpected response from balance endpoint: {response}")
+        balances = response.get("balances") or response.get("data") or []
+        if not isinstance(balances, list):
+            balances = [balances]
 
         local_assets = set(self._account_balances.keys())
         remote_assets = set()
@@ -297,6 +303,8 @@ class BackpackExchange(ExchangePyBase):
     async def _format_trading_rules(self, exchange_info: Dict[str, Any]) -> List[TradingRule]:
         """Format the trading rules for the exchange."""
         trading_rules = []
+        if not isinstance(exchange_info, dict):
+            raise IOError(f"Unexpected response from markets endpoint: {exchange_info}")
         markets = exchange_info.get("markets") or exchange_info.get("data") or []
 
         for market in markets:
