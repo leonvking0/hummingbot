@@ -1,4 +1,4 @@
-from typing import Optional, Callable
+from typing import Callable, Optional
 
 from hummingbot.connector.time_synchronizer import TimeSynchronizer
 from hummingbot.connector.utils import TimeSynchronizerRESTPreProcessor
@@ -8,6 +8,16 @@ from hummingbot.core.web_assistant.connections.data_types import RESTMethod
 from hummingbot.core.web_assistant.web_assistants_factory import WebAssistantsFactory
 
 from . import backpack_constants as CONSTANTS
+
+
+def public_rest_url(path_url: str, domain: str = CONSTANTS.DEFAULT_DOMAIN) -> str:
+    """Construct public REST URL for an endpoint."""
+    return rest_url(path_url, domain)
+
+
+def private_rest_url(path_url: str, domain: str = CONSTANTS.DEFAULT_DOMAIN) -> str:
+    """Construct private REST URL for an endpoint."""
+    return rest_url(path_url, domain)
 
 
 def rest_url(path_url: str, domain: str = CONSTANTS.DEFAULT_DOMAIN) -> str:
@@ -50,4 +60,3 @@ async def get_current_server_time(throttler: Optional[AsyncThrottler] = None) ->
     )
     server_time = float(response.get("serverTime") or response.get("time") or response.get("ts"))
     return server_time
-
