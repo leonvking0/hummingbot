@@ -50,13 +50,27 @@ def create_throttler() -> AsyncThrottler:
 
 
 async def get_current_server_time(throttler: Optional[AsyncThrottler] = None) -> float:
+    """Return the current server time from Backpack exchange."""
+
     throttler = throttler or create_throttler()
     api_factory = WebAssistantsFactory(throttler=throttler)
     rest_assistant = await api_factory.get_rest_assistant()
-    response = await rest_assistant.execute_request(
+    response = await rest_assistant.execute_request_and_get_response(
         url=rest_url(CONSTANTS.SERVER_TIME_PATH_URL),
         method=RESTMethod.GET,
         throttler_limit_id=CONSTANTS.SERVER_TIME_PATH_URL,
     )
-    server_time = float(response.get("serverTime") or response.get("time") or response.get("ts"))
+
+    try:
+        data = await response.json()
+    except Exception:
+        # Some endpoints return JSON with an incorrect Content-Type header
+        # noinspection PyProtectedMember
+        try:
+            data = await response._aiohttp_response.json(content_type=None)
+        except Exception:
+            text = await response.text()
+            return float(text)
+
+    server_time = float(data.get("serverTime") or data.get("time") or data.get("ts"))
     return server_time
