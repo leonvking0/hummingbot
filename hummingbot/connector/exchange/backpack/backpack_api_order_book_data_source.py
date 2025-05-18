@@ -3,6 +3,7 @@ import time
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from hummingbot.connector.exchange.backpack import backpack_constants as CONSTANTS
+from hummingbot.connector.exchange.backpack.backpack_order_book import BackpackOrderBook
 from hummingbot.core.data_type.order_book_message import OrderBookMessage, OrderBookMessageType
 from hummingbot.core.data_type.order_book_tracker_data_source import OrderBookTrackerDataSource
 from hummingbot.core.web_assistant.connections.data_types import RESTMethod, WSJSONRequest
@@ -29,6 +30,8 @@ class BackpackAPIOrderBookDataSource(OrderBookTrackerDataSource):
         self._api_factory = api_factory
         self._domain = domain
         self._channel_associated_to_pair: Dict[str, str] = {}
+        # use custom order book class
+        self.order_book_create_function = lambda: BackpackOrderBook()
 
     async def get_last_traded_prices(self,
                                      trading_pairs: List[str],
