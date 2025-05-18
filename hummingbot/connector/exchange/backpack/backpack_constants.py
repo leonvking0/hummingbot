@@ -1,6 +1,6 @@
 """Constants used by the Backpack exchange connector."""
 
-from hummingbot.core.api_throttler.data_types import RateLimit
+from hummingbot.core.api_throttler.data_types import LinkedLimitWeightPair, RateLimit
 
 # Exchange info
 EXCHANGE_NAME = "backpack"
@@ -41,6 +41,45 @@ ERROR_CODE_MAPPING = {
 
 # Rate limits (placeholder values)
 RATE_LIMITS = [
+    # Global per-IP REST limit
     RateLimit(limit_id="REST", limit=100, time_interval=1),
+    # Global websocket limit
     RateLimit(limit_id="WEB_SOCKET", limit=30, time_interval=1),
+    # Endpoint specific limits linked to REST pool
+    RateLimit(
+        limit_id=ORDER_BOOK_PATH_URL,
+        limit=100,
+        time_interval=1,
+        linked_limits=[LinkedLimitWeightPair("REST")],
+    ),
+    RateLimit(
+        limit_id=SERVER_TIME_PATH_URL,
+        limit=100,
+        time_interval=1,
+        linked_limits=[LinkedLimitWeightPair("REST")],
+    ),
+    RateLimit(
+        limit_id=MARKETS_PATH_URL,
+        limit=100,
+        time_interval=1,
+        linked_limits=[LinkedLimitWeightPair("REST")],
+    ),
+    RateLimit(
+        limit_id=TRADES_PATH_URL,
+        limit=100,
+        time_interval=1,
+        linked_limits=[LinkedLimitWeightPair("REST")],
+    ),
+    RateLimit(
+        limit_id=ORDERS_PATH_URL,
+        limit=100,
+        time_interval=1,
+        linked_limits=[LinkedLimitWeightPair("REST")],
+    ),
+    RateLimit(
+        limit_id=BALANCE_PATH_URL,
+        limit=100,
+        time_interval=1,
+        linked_limits=[LinkedLimitWeightPair("REST")],
+    ),
 ]
