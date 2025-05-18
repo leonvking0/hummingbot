@@ -21,7 +21,7 @@ SERVER_TIME_PATH_URL = "/api/v1/time"
 MARKETS_PATH_URL = "/api/v1/markets"
 TRADES_PATH_URL = "/api/v1/trades"
 ORDERS_PATH_URL = "/api/v1/orders"
-BALANCE_PATH_URL = "/api/v1/balances"
+BALANCE_PATH_URL = "/api/v1/capital"
 
 # Websocket constants
 WS_HEARTBEAT_TIME_INTERVAL = 30
