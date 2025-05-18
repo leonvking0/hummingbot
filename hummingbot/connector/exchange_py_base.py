@@ -700,7 +700,8 @@ class ExchangePyBase(ExchangeBase, ABC):
         self._last_timestamp = 0
         self._poll_notifier = asyncio.Event()
 
-        self.order_book_tracker.stop()
+        if self.order_book_tracker is not None:
+            self.order_book_tracker.stop()
         if self._status_polling_task is not None:
             self._status_polling_task.cancel()
             self._status_polling_task = None
