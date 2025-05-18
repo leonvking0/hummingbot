@@ -349,6 +349,54 @@ class BackpackExchange(ExchangePyBase):
     def _is_request_exception_related_to_time_synchronizer(self, request_exception: Exception):
         return "timestamp" in str(request_exception).lower()
 
+    async def _api_request(
+        self,
+        path_url: str,
+        overwrite_url: Optional[str] = None,
+        method: RESTMethod = RESTMethod.GET,
+        params: Optional[Dict[str, Any]] = None,
+        data: Optional[Dict[str, Any]] = None,
+        is_auth_required: bool = False,
+        return_err: bool = False,
+        limit_id: Optional[str] = None,
+        headers: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Execute an HTTP request with exponential backoff on failures."""
+        backoff_delay = 1
+        last_exception = None
+        for _ in range(3):
+            try:
+                result = await super()._api_request(
+                    path_url=path_url,
+                    overwrite_url=overwrite_url,
+                    method=method,
+                    params=params,
+                    data=data,
+                    is_auth_required=is_auth_required,
+                    return_err=return_err,
+                    limit_id=limit_id,
+                    headers=headers,
+                )
+
+                if isinstance(result, dict) and "code" in result and result.get("code") not in (0, "0"):
+                    err_code = int(result.get("code"))
+                    err_message = result.get("msg") or result.get("message", "")
+                    exc_name = CONSTANTS.ERROR_CODE_MAPPING.get(err_code)
+                    if exc_name == "RateLimitError":
+                        raise IOError(f"Rate limit exceeded ({err_message})")
+                    elif exc_name == "AuthenticationError":
+                        raise PermissionError(f"Authentication failed ({err_message})")
+                    elif exc_name == "OrderNotFound":
+                        raise IOError(f"Order not found ({err_message})")
+
+                return result
+            except Exception as request_exception:
+                last_exception = request_exception
+                self.logger().debug(f"Request failed: {request_exception}. Retrying in {backoff_delay}s")
+                await self._sleep(backoff_delay)
+                backoff_delay = min(backoff_delay * 2, 60)
+        raise last_exception
+
     async def _update_trading_fees(self):
         return
 
