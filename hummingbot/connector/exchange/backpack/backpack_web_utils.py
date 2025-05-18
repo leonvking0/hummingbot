@@ -61,16 +61,16 @@ async def get_current_server_time(throttler: Optional[AsyncThrottler] = None) ->
         throttler_limit_id=CONSTANTS.SERVER_TIME_PATH_URL,
     )
 
-    try:
-        data = await response.json()
-    except Exception:
-        # Some endpoints return JSON with an incorrect Content-Type header
-        # noinspection PyProtectedMember
+    # Handle text response
+    if isinstance(response, str):
         try:
-            data = await response._aiohttp_response.json(content_type=None)
-        except Exception:
-            text = await response.text()
-            return float(text)
+            # Try to convert string directly to float
+            return float(response.strip())
+        except ValueError:
+            # If conversion fails, log and use current time
+            import time
+            return time.time() * 1000
 
-    server_time = float(data.get("serverTime") or data.get("time") or data.get("ts"))
+    # Handle JSON response
+    server_time = float(response.get("serverTime") or response.get("time") or response.get("ts"))
     return server_time

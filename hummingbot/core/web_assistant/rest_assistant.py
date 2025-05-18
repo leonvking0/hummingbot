@@ -18,6 +18,7 @@ class RESTAssistant:
     the `RESTPreProcessorBase` and `RESTPostProcessorBase` classes. The pre-processors are applied to a request
     before it is sent out, while the post-processors are applied to a response before it is returned to the caller.
     """
+
     def __init__(
         self,
         connection: RESTConnection,
@@ -55,8 +56,14 @@ class RESTAssistant:
             timeout=timeout,
             headers=headers,
         )
-        response_json = await response.json()
-        return response_json
+        try:
+            # Try to parse as JSON first
+            response_json = await response.json()
+            return response_json
+        except Exception:
+            # If JSON parsing fails, return text
+            response_text = await response.text()
+            return response_text
 
     async def execute_request_and_get_response(
             self,

@@ -152,7 +152,15 @@ class BackpackExchange(ExchangePyBase):
 
     def _initialize_trading_pair_symbols_from_exchange_info(self, exchange_info: Dict[str, Any]):
         mapping = bidict()
-        markets = exchange_info.get("markets") or exchange_info.get("data") or []
+        markets = []
+
+        # Handle case where exchange_info is a list
+        if isinstance(exchange_info, list):
+            markets = exchange_info
+        else:
+            # Original behavior for dictionary response
+            markets = exchange_info.get("markets") or exchange_info.get("data") or []
+
         for market in markets:
             symbol = market.get("id") or market.get("symbol") or market.get("name")
             base = market.get("baseAsset") or market.get("base") or market.get("base_currency")
