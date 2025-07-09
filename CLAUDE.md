@@ -114,3 +114,29 @@ pre-commit install
 - Cython extensions (.pyx files) compile to C++ for performance
 - Must run `./compile` after modifying any .pyx files
 - Core data structures use optimized implementations
+
+## Current Work: Backpack Exchange Integration
+
+### Task Overview
+Adding support for Backpack Exchange to Hummingbot, focusing on public API integration for order book and trade data.
+
+### Todo List
+A detailed todo list is maintained in `/todo.md` tracking all implementation tasks.
+
+### Key Implementation Considerations
+1. **Authentication**: Backpack uses ED25519 signatures instead of HMAC
+2. **API Endpoints**:
+   - Public markets: GET /api/v1/markets
+   - Order book: GET /api/v1/depth?symbol={symbol}
+   - Ticker: GET /api/v1/ticker?symbol={symbol}
+3. **WebSocket Streams**: Format is `<type>.<symbol>` (e.g., `depth.SOL_USDC`)
+4. **Trading Pair Format**: Uses underscores (SOL_USDC) instead of dashes
+
+### API Documentation
+Full API specification is available in `/api-doc/backpack.json`
+
+# important-instruction-reminders
+Do what has been asked; nothing more, nothing less.
+NEVER create files unless they're absolutely necessary for achieving your goal.
+ALWAYS prefer editing an existing file to creating a new one.
+NEVER proactively create documentation files (*.md) or README files. Only create documentation files if explicitly requested by the User.
