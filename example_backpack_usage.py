@@ -16,6 +16,8 @@ from hummingbot.connector.exchange.backpack.backpack_exchange import BackpackExc
 from hummingbot.connector.exchange.backpack.backpack_api_order_book_data_source import BackpackAPIOrderBookDataSource
 from hummingbot.connector.exchange.backpack import backpack_web_utils as web_utils
 from hummingbot.core.api_throttler.async_throttler import AsyncThrottler
+from hummingbot.client.config.config_helpers import ClientConfigAdapter
+from hummingbot.client.config.client_config_map import ClientConfigMap
 
 
 async def main():
@@ -27,8 +29,12 @@ async def main():
     # Trading pairs to track
     trading_pairs = ["SOL-USDC", "BTC-USDC", "ETH-USDC"]
     
+    # Create client config adapter
+    client_config = ClientConfigAdapter(ClientConfigMap())
+    
     # Create exchange instance (no API keys needed for public data)
     exchange = BackpackExchange(
+        client_config_map=client_config,
         api_key="",
         api_secret="",
         trading_pairs=trading_pairs,

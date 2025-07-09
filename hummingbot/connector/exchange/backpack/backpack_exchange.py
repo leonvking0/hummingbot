@@ -1,7 +1,7 @@
 import asyncio
 import time
 from decimal import Decimal
-from typing import Any, Dict, List, Optional, Set
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set
 
 from hummingbot.connector.exchange.backpack import (
     backpack_constants as CONSTANTS,
@@ -22,6 +22,9 @@ from hummingbot.core.web_assistant.auth import AuthBase
 from hummingbot.core.web_assistant.connections.data_types import RESTMethod
 from hummingbot.core.web_assistant.web_assistants_factory import WebAssistantsFactory
 
+if TYPE_CHECKING:
+    from hummingbot.client.config.config_helpers import ClientConfigAdapter
+
 
 class BackpackExchange(ExchangePyBase):
     """
@@ -31,6 +34,7 @@ class BackpackExchange(ExchangePyBase):
 
     def __init__(
         self,
+        client_config_map: "ClientConfigAdapter",
         api_key: str = "",
         api_secret: str = "",
         trading_pairs: Optional[List[str]] = None,
@@ -43,13 +47,16 @@ class BackpackExchange(ExchangePyBase):
         self._trading_pairs = trading_pairs or []
         self._trading_required = trading_required
         
-        super().__init__()
+        super().__init__(client_config_map)
 
     @property
     def authenticator(self) -> AuthBase:
         """
         Return the authenticator for the exchange
         """
+        if not hasattr(self, "_auth"):
+            self._auth = None
+        
         if self._auth is None and self._api_key and self._api_secret:
             self._auth = BackpackAuth(
                 api_key=self._api_key,
@@ -135,14 +142,21 @@ class BackpackExchange(ExchangePyBase):
         return BackpackAPIOrderBookDataSource(
             trading_pairs=self._trading_pairs,
             throttler=self._throttler,
-            api_factory=self._api_factory,
+            api_factory=self._web_assistants_factory,
             domain=self._domain
         )
 
     def _create_user_stream_data_source(self) -> UserStreamTrackerDataSource:
         """Create user stream data source"""
         # Not implemented for public API only
-        raise NotImplementedError("User stream not implemented for public API only")
+        return None
+    
+    def _create_user_stream_tracker(self):
+        """
+        Create user stream tracker
+        For public API only implementation, we return None
+        """
+        return None
 
     def _get_fee(self,
                  base_currency: str,
@@ -336,3 +350,53 @@ class BackpackExchange(ExchangePyBase):
         )
         
         return float(ticker.get("lastPrice", 0))
+
+    def _is_order_not_found_during_cancelation_error(self, cancelation_exception: Exception) -> bool:
+        """
+        Check if the exception during order cancellation indicates that the order was not found.
+        
+        Based on Backpack API error codes:
+        - INVALID_ORDER: The order is invalid (doesn't exist or wrong format)
+        - RESOURCE_NOT_FOUND: The requested resource was not found
+        """
+        error_message = str(cancelation_exception).upper()
+        
+        # Check for specific Backpack error codes
+        return (
+            "INVALID_ORDER" in error_message or
+            "RESOURCE_NOT_FOUND" in error_message or
+            "ORDER NOT FOUND" in error_message or
+            "UNKNOWN ORDER" in error_message
+        )
+
+    def _is_order_not_found_during_status_update_error(self, status_update_exception: Exception) -> bool:
+        """
+        Check if the exception during order status update indicates that the order was not found.
+        
+        Based on Backpack API error codes:
+        - INVALID_ORDER: The order is invalid (doesn't exist or wrong format)
+        - RESOURCE_NOT_FOUND: The requested resource was not found
+        """
+        error_message = str(status_update_exception).upper()
+        
+        # Check for specific Backpack error codes
+        return (
+            "INVALID_ORDER" in error_message or
+            "RESOURCE_NOT_FOUND" in error_message or
+            "ORDER NOT FOUND" in error_message or
+            "UNKNOWN ORDER" in error_message or
+            "ORDER DOES NOT EXIST" in error_message
+        )
+
+    async def _update_trading_fees(self):
+        """
+        Update trading fees from the exchange.
+        
+        For Backpack Exchange, since we're implementing public API only,
+        we'll use default fees. In a full implementation with private API access,
+        this would fetch the actual fee structure based on the user's tier.
+        """
+        # Default fee structure for Backpack Exchange
+        # Maker: 0.02%, Taker: 0.04%
+        # These are example values - actual fees should be fetched from the exchange
+        pass

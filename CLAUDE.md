@@ -19,6 +19,11 @@ Hummingbot is an open-source framework for designing and deploying automated tra
 make build
 ```
 
+### Enter the python environment
+```
+conda activate hummingbot
+```
+
 ### Running the Application
 ```bash
 # Run main application
@@ -122,6 +127,23 @@ Adding support for Backpack Exchange to Hummingbot, focusing on public API integ
 
 ### Todo List
 A detailed todo list is maintained in `/todo.md` tracking all implementation tasks.
+
+### Implementation Status
+✅ **Completed**: BackpackExchange connector now successfully instantiates and can fetch:
+- Trading rules and pairs
+- Last traded prices
+- Order book snapshots
+- Real-time order book updates (WebSocket needs minor fix)
+
+### Key Implementation Details
+1. **Abstract Methods Implemented**:
+   - `_is_order_not_found_during_cancelation_error`: Checks for INVALID_ORDER and RESOURCE_NOT_FOUND error codes
+   - `_is_order_not_found_during_status_update_error`: Similar error code checking
+   - `_update_trading_fees`: Currently returns pass (public API only)
+   
+2. **ClientConfigAdapter**: Exchange constructor now properly accepts and passes ClientConfigAdapter parameter
+
+3. **User Stream**: Overridden to return None for public API only implementation
 
 ### Key Implementation Considerations
 1. **Authentication**: Backpack uses ED25519 signatures instead of HMAC
