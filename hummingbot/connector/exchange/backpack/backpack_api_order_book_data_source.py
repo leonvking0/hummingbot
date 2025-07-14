@@ -13,7 +13,7 @@ from hummingbot.core.api_throttler.async_throttler import AsyncThrottler
 from hummingbot.core.data_type.order_book import OrderBook
 from hummingbot.core.data_type.order_book_message import OrderBookMessage, OrderBookMessageType
 from hummingbot.core.data_type.order_book_tracker_data_source import OrderBookTrackerDataSource
-from hummingbot.core.web_assistant.connections.data_types import RESTMethod
+from hummingbot.core.web_assistant.connections.data_types import RESTMethod, WSJSONRequest
 from hummingbot.core.web_assistant.web_assistants_factory import WebAssistantsFactory
 from hummingbot.logger import HummingbotLogger
 
@@ -180,7 +180,8 @@ class BackpackAPIOrderBookDataSource(OrderBookTrackerDataSource):
                     exchange_symbol = utils.convert_to_exchange_trading_pair(trading_pair)
                     stream_name = web_utils.get_ws_stream_name(CONSTANTS.WS_TRADES_STREAM, exchange_symbol)
                     subscribe_msg = web_utils.create_ws_subscribe_message([stream_name])
-                    subscribe_tasks.append(ws_assistant.send(subscribe_msg))
+                    subscribe_request = WSJSONRequest(payload=subscribe_msg)
+                    subscribe_tasks.append(ws_assistant.send(subscribe_request))
                 
                 await asyncio.gather(*subscribe_tasks)
                 
@@ -231,7 +232,8 @@ class BackpackAPIOrderBookDataSource(OrderBookTrackerDataSource):
                     exchange_symbol = utils.convert_to_exchange_trading_pair(trading_pair)
                     stream_name = web_utils.get_ws_stream_name(CONSTANTS.WS_DEPTH_STREAM, exchange_symbol)
                     subscribe_msg = web_utils.create_ws_subscribe_message([stream_name])
-                    subscribe_tasks.append(ws_assistant.send(subscribe_msg))
+                    subscribe_request = WSJSONRequest(payload=subscribe_msg)
+                    subscribe_tasks.append(ws_assistant.send(subscribe_request))
                 
                 await asyncio.gather(*subscribe_tasks)
                 
