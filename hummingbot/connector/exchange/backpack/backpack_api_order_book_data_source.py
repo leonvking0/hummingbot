@@ -165,13 +165,12 @@ class BackpackAPIOrderBookDataSource(OrderBookTrackerDataSource):
         """
         Creates an instance of WSAssistant connected to the exchange.
         """
-        if self._ws_assistant is None:
-            self._ws_assistant = await self._api_factory.get_ws_assistant()
-            await self._ws_assistant.connect(
-                ws_url=web_utils.wss_url(self._domain),
-                ping_timeout=CONSTANTS.WS_HEARTBEAT_TIMEOUT
-            )
-        return self._ws_assistant
+        ws_assistant = await self._api_factory.get_ws_assistant()
+        await ws_assistant.connect(
+            ws_url=web_utils.wss_url(self._domain),
+            ping_timeout=CONSTANTS.WS_HEARTBEAT_TIMEOUT
+        )
+        return ws_assistant
 
     async def _subscribe_channels(self, ws: WSAssistant):
         """
@@ -197,115 +196,111 @@ class BackpackAPIOrderBookDataSource(OrderBookTrackerDataSource):
         await asyncio.gather(*subscribe_tasks)
         self.logger().info(f"Subscribed to order book and trade channels for {self._trading_pairs}")
 
+    def _channel_originating_message(self, event_message: Dict[str, Any]) -> str:
+        """
+        Identifies the channel for a particular event message
+        :param event_message: the event received through the websocket connection
+        :return: the message channel
+        """
+        channel = ""
+        if isinstance(event_message, dict) and "stream" in event_message:
+            stream_name = event_message.get("stream", "")
+            # Parse stream name format: <type>.<symbol>
+            if stream_name.startswith(f"{CONSTANTS.WS_DEPTH_STREAM}."):
+                channel = self._diff_messages_queue_key
+            elif stream_name.startswith(f"{CONSTANTS.WS_TRADES_STREAM}."):
+                channel = self._trade_messages_queue_key
+        return channel
+
+    async def _parse_order_book_diff_message(self, raw_message: Dict[str, Any], message_queue: asyncio.Queue):
+        """
+        Parse order book diff message and add to queue
+        """
+        if "data" in raw_message and "stream" in raw_message:
+            stream_name = raw_message["stream"]
+            data = raw_message["data"]
+            
+            # Extract trading pair from stream name (format: depth.SOL_USDC)
+            exchange_symbol = stream_name.split(".")[-1]
+            trading_pair = utils.convert_from_exchange_trading_pair(exchange_symbol)
+            
+            # Get timestamp from data or use current time
+            timestamp = data.get("E", time.time() * 1000) / 1e6  # Convert microseconds to seconds
+            
+            order_book_msg = utils.parse_order_book_diff(
+                diff_data=data,
+                trading_pair=trading_pair,
+                timestamp=timestamp
+            )
+            message_queue.put_nowait(order_book_msg)
+
+    async def _parse_trade_message(self, raw_message: Dict[str, Any], message_queue: asyncio.Queue):
+        """
+        Parse trade message and add to queue
+        """
+        if "data" in raw_message and "stream" in raw_message:
+            stream_name = raw_message["stream"]
+            data = raw_message["data"]
+            
+            # Extract trading pair from stream name (format: trades.SOL_USDC)
+            exchange_symbol = stream_name.split(".")[-1]
+            trading_pair = utils.convert_from_exchange_trading_pair(exchange_symbol)
+            
+            trade_msg = self._parse_trade_message_data(data, trading_pair)
+            message_queue.put_nowait(trade_msg)
+
+    async def _process_websocket_messages(self, websocket_assistant: WSAssistant):
+        """
+        Process messages from websocket
+        """
+        async for ws_response in websocket_assistant.iter_messages():
+            data = ws_response.data
+            if isinstance(data, dict) and data.get("stream"):
+                channel = self._channel_originating_message(data)
+                if channel == self._diff_messages_queue_key:
+                    await self._parse_order_book_diff_message(data, self._message_queue[channel])
+                elif channel == self._trade_messages_queue_key:
+                    await self._parse_trade_message(data, self._message_queue[channel])
+
+    async def _on_order_stream_interruption(self, websocket_assistant: Optional[WSAssistant]):
+        """Clean up on websocket interruption"""
+        if websocket_assistant:
+            await websocket_assistant.disconnect()
+        self._ws_assistant = None
+
     async def listen_for_trades(self, ev_loop: asyncio.AbstractEventLoop, output: asyncio.Queue):
         """
         Listen for trade events via WebSocket
-
-        :param ev_loop: Event loop
-        :param output: Output queue for trade messages
+        This is now handled by the unified listen_for_subscriptions method
         """
+        # Trade messages are handled by the base class listen_for_subscriptions
+        message_queue = self._message_queue[self._trade_messages_queue_key]
         while True:
             try:
-                ws_assistant = await self._api_factory.get_ws_assistant()
-                await ws_assistant.connect(
-                    ws_url=web_utils.wss_url(self._domain),
-                    ping_timeout=CONSTANTS.WS_HEARTBEAT_TIMEOUT
-                )
-                
-                # Subscribe to trade streams for all trading pairs
-                subscribe_tasks = []
-                for trading_pair in self._trading_pairs:
-                    exchange_symbol = utils.convert_to_exchange_trading_pair(trading_pair)
-                    stream_name = web_utils.get_ws_stream_name(CONSTANTS.WS_TRADES_STREAM, exchange_symbol)
-                    subscribe_msg = web_utils.create_ws_subscribe_message([stream_name])
-                    subscribe_request = WSJSONRequest(payload=subscribe_msg)
-                    subscribe_tasks.append(ws_assistant.send(subscribe_request))
-                
-                await asyncio.gather(*subscribe_tasks)
-                
-                async for ws_response in ws_assistant.iter_messages():
-                    data = ws_response.data
-                    if isinstance(data, dict) and "stream" in data:
-                        stream_data = data.get("data", {})
-                        stream_name = data.get("stream", "")
-                        
-                        if stream_name.startswith(f"{CONSTANTS.WS_TRADES_STREAM}."):
-                            # Extract trading pair from stream name
-                            exchange_symbol = stream_name.split(".")[-1]
-                            trading_pair = utils.convert_from_exchange_trading_pair(exchange_symbol)
-                            
-                            trade_msg = self._parse_trade_message(stream_data, trading_pair)
-                            output.put_nowait(trade_msg)
-                            
+                order_book_message = await message_queue.get()
+                output.put_nowait(order_book_message)
             except asyncio.CancelledError:
                 raise
-            except Exception as e:
-                self.logger().error(
-                    f"Unexpected error in trades listener. Error: {str(e)}",
-                    exc_info=True
-                )
+            except Exception:
+                self.logger().exception("Unexpected error when listening for trades.")
                 await self._sleep(5.0)
-            finally:
-                if ws_assistant:
-                    await ws_assistant.disconnect()
 
     async def listen_for_order_book_diffs(self, ev_loop: asyncio.AbstractEventLoop, output: asyncio.Queue):
         """
         Listen for order book diff events via WebSocket
-
-        :param ev_loop: Event loop
-        :param output: Output queue for order book messages
+        This is now handled by the unified listen_for_subscriptions method
         """
+        # Order book diff messages are handled by the base class listen_for_subscriptions
+        message_queue = self._message_queue[self._diff_messages_queue_key]
         while True:
             try:
-                ws_assistant = await self._api_factory.get_ws_assistant()
-                await ws_assistant.connect(
-                    ws_url=web_utils.wss_url(self._domain),
-                    ping_timeout=CONSTANTS.WS_HEARTBEAT_TIMEOUT
-                )
-                
-                # Subscribe to depth streams for all trading pairs
-                subscribe_tasks = []
-                for trading_pair in self._trading_pairs:
-                    exchange_symbol = utils.convert_to_exchange_trading_pair(trading_pair)
-                    stream_name = web_utils.get_ws_stream_name(CONSTANTS.WS_DEPTH_STREAM, exchange_symbol)
-                    subscribe_msg = web_utils.create_ws_subscribe_message([stream_name])
-                    subscribe_request = WSJSONRequest(payload=subscribe_msg)
-                    subscribe_tasks.append(ws_assistant.send(subscribe_request))
-                
-                await asyncio.gather(*subscribe_tasks)
-                
-                async for ws_response in ws_assistant.iter_messages():
-                    data = ws_response.data
-                    if isinstance(data, dict) and "stream" in data:
-                        stream_data = data.get("data", {})
-                        stream_name = data.get("stream", "")
-                        
-                        if stream_name.startswith(f"{CONSTANTS.WS_DEPTH_STREAM}."):
-                            # Extract trading pair from stream name
-                            exchange_symbol = stream_name.split(".")[-1]
-                            trading_pair = utils.convert_from_exchange_trading_pair(exchange_symbol)
-                            
-                            # Parse the depth update
-                            timestamp = stream_data.get("E", time.time() * 1000) / 1000  # Convert from microseconds
-                            order_book_msg = utils.parse_order_book_diff(
-                                diff_data=stream_data,
-                                trading_pair=trading_pair,
-                                timestamp=timestamp
-                            )
-                            output.put_nowait(order_book_msg)
-                            
+                order_book_message = await message_queue.get()
+                output.put_nowait(order_book_message)
             except asyncio.CancelledError:
                 raise
-            except Exception as e:
-                self.logger().error(
-                    f"Unexpected error in order book diff listener. Error: {str(e)}",
-                    exc_info=True
-                )
+            except Exception:
+                self.logger().exception("Unexpected error when listening for order book diffs.")
                 await self._sleep(5.0)
-            finally:
-                if ws_assistant:
-                    await ws_assistant.disconnect()
 
     async def listen_for_order_book_snapshots(self, ev_loop: asyncio.AbstractEventLoop, output: asyncio.Queue):
         """
@@ -329,7 +324,7 @@ class BackpackAPIOrderBookDataSource(OrderBookTrackerDataSource):
                     exc_info=True
                 )
 
-    def _parse_trade_message(self, trade_data: Dict[str, Any], trading_pair: str) -> OrderBookMessage:
+    def _parse_trade_message_data(self, trade_data: Dict[str, Any], trading_pair: str) -> OrderBookMessage:
         """
         Parse trade message from WebSocket
 
