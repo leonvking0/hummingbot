@@ -125,13 +125,16 @@ def parse_order_book_snapshot(
     bids = []
     asks = []
     
+    # Get update_id from snapshot data or use timestamp as integer
+    update_id = int(snapshot_data.get("lastUpdateId", int(timestamp * 1000)))
+    
     # Parse and sort bids (highest price first)
     raw_bids = snapshot_data.get("bids", [])
     sorted_bids = sorted(raw_bids, key=lambda x: float(x[0]), reverse=True)
     for bid in sorted_bids:
         price = Decimal(str(bid[0]))
         amount = Decimal(str(bid[1]))
-        bids.append(OrderBookRow(price, amount, timestamp))
+        bids.append(OrderBookRow(price, amount, update_id))
     
     # Parse and sort asks (lowest price first)
     raw_asks = snapshot_data.get("asks", [])
@@ -139,7 +142,7 @@ def parse_order_book_snapshot(
     for ask in sorted_asks:
         price = Decimal(str(ask[0]))
         amount = Decimal(str(ask[1]))
-        asks.append(OrderBookRow(price, amount, timestamp))
+        asks.append(OrderBookRow(price, amount, update_id))
     
     return OrderBookMessage(
         message_type=OrderBookMessageType.SNAPSHOT,
@@ -147,7 +150,7 @@ def parse_order_book_snapshot(
             "trading_pair": trading_pair,
             "bids": bids,
             "asks": asks,
-            "update_id": snapshot_data.get("lastUpdateId", timestamp)
+            "update_id": update_id
         },
         timestamp=timestamp
     )
@@ -169,17 +172,21 @@ def parse_order_book_diff(
     bids = []
     asks = []
     
+    # Get update_id from diff data or use timestamp as integer
+    update_id = int(diff_data.get("u", int(timestamp * 1000)))
+    first_update_id = int(diff_data.get("U", update_id))
+    
     # Parse bid updates
     for bid in diff_data.get("b", []):
         price = Decimal(str(bid[0]))
         amount = Decimal(str(bid[1]))
-        bids.append(OrderBookRow(price, amount, timestamp))
+        bids.append(OrderBookRow(price, amount, update_id))
     
     # Parse ask updates
     for ask in diff_data.get("a", []):
         price = Decimal(str(ask[0]))
         amount = Decimal(str(ask[1]))
-        asks.append(OrderBookRow(price, amount, timestamp))
+        asks.append(OrderBookRow(price, amount, update_id))
     
     return OrderBookMessage(
         message_type=OrderBookMessageType.DIFF,
@@ -187,8 +194,8 @@ def parse_order_book_diff(
             "trading_pair": trading_pair,
             "bids": bids,
             "asks": asks,
-            "update_id": diff_data.get("u", timestamp),
-            "first_update_id": diff_data.get("U", diff_data.get("u", timestamp))
+            "update_id": update_id,
+            "first_update_id": first_update_id
         },
         timestamp=timestamp
     )

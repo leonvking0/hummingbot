@@ -15,6 +15,7 @@ from hummingbot.core.data_type.order_book_message import OrderBookMessage, Order
 from hummingbot.core.data_type.order_book_tracker_data_source import OrderBookTrackerDataSource
 from hummingbot.core.web_assistant.connections.data_types import RESTMethod, WSJSONRequest
 from hummingbot.core.web_assistant.web_assistants_factory import WebAssistantsFactory
+from hummingbot.core.web_assistant.ws_assistant import WSAssistant
 from hummingbot.logger import HummingbotLogger
 
 
@@ -38,6 +39,7 @@ class BackpackAPIOrderBookDataSource(OrderBookTrackerDataSource):
         self._domain = domain
         self._trading_pairs = trading_pairs
         self._snapshot_msg: Dict[str, OrderBookMessage] = {}
+        self._ws_assistant = None
 
     @classmethod
     def logger(cls) -> HummingbotLogger:
@@ -158,6 +160,42 @@ class BackpackAPIOrderBookDataSource(OrderBookTrackerDataSource):
             snapshot_msg.update_id
         )
         return order_book
+
+    async def _connected_websocket_assistant(self) -> WSAssistant:
+        """
+        Creates an instance of WSAssistant connected to the exchange.
+        """
+        if self._ws_assistant is None:
+            self._ws_assistant = await self._api_factory.get_ws_assistant()
+            await self._ws_assistant.connect(
+                ws_url=web_utils.wss_url(self._domain),
+                ping_timeout=CONSTANTS.WS_HEARTBEAT_TIMEOUT
+            )
+        return self._ws_assistant
+
+    async def _subscribe_channels(self, ws: WSAssistant):
+        """
+        Subscribe to order book and trade channels for all trading pairs.
+        """
+        # Subscribe to depth and trade streams for all trading pairs
+        subscribe_tasks = []
+        for trading_pair in self._trading_pairs:
+            exchange_symbol = utils.convert_to_exchange_trading_pair(trading_pair)
+            
+            # Subscribe to depth stream
+            depth_stream_name = web_utils.get_ws_stream_name(CONSTANTS.WS_DEPTH_STREAM, exchange_symbol)
+            depth_subscribe_msg = web_utils.create_ws_subscribe_message([depth_stream_name])
+            depth_subscribe_request = WSJSONRequest(payload=depth_subscribe_msg)
+            subscribe_tasks.append(ws.send(depth_subscribe_request))
+            
+            # Subscribe to trades stream
+            trades_stream_name = web_utils.get_ws_stream_name(CONSTANTS.WS_TRADES_STREAM, exchange_symbol)
+            trades_subscribe_msg = web_utils.create_ws_subscribe_message([trades_stream_name])
+            trades_subscribe_request = WSJSONRequest(payload=trades_subscribe_msg)
+            subscribe_tasks.append(ws.send(trades_subscribe_request))
+        
+        await asyncio.gather(*subscribe_tasks)
+        self.logger().info(f"Subscribed to order book and trade channels for {self._trading_pairs}")
 
     async def listen_for_trades(self, ev_loop: asyncio.AbstractEventLoop, output: asyncio.Queue):
         """
