@@ -29,4 +29,6 @@ def init_fee_overrides_config():
     fee_overrides_config_map.update(fee_overrides_dict())
 
 
-init_fee_overrides_config()
+def ensure_fee_overrides_initialized():
+    if not fee_overrides_config_map:
+        init_fee_overrides_config()

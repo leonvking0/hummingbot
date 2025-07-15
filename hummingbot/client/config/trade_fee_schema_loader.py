@@ -1,6 +1,6 @@
 from decimal import Decimal
 
-from hummingbot.client.config.fee_overrides_config_map import fee_overrides_config_map
+from hummingbot.client.config.fee_overrides_config_map import fee_overrides_config_map, ensure_fee_overrides_initialized
 from hummingbot.client.settings import AllConnectorSettings
 from hummingbot.core.data_type.trade_fee import TradeFeeSchema, TokenAmount
 
@@ -21,6 +21,7 @@ class TradeFeeSchemaLoader:
 
     @classmethod
     def _superimpose_overrides(cls, exchange: str, trade_fee_schema: TradeFeeSchema):
+        ensure_fee_overrides_initialized()
         trade_fee_schema.percent_fee_token = (
             fee_overrides_config_map.get(f"{exchange}_percent_fee_token").value
             or trade_fee_schema.percent_fee_token
