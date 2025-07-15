@@ -1,12 +1,25 @@
 from decimal import Decimal
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
+from pydantic import ConfigDict, Field, SecretStr
+
+from hummingbot.client.config.config_data_types import BaseConnectorConfigMap
 from hummingbot.connector.derivative.backpack_perpetual import backpack_perpetual_constants as CONSTANTS
 from hummingbot.core.data_type.common import TradeType
 from hummingbot.core.data_type.in_flight_order import InFlightOrder
 from hummingbot.core.data_type.order_book_message import OrderBookMessage, OrderBookMessageType
 from hummingbot.core.data_type.order_book_row import OrderBookRow
 from hummingbot.core.data_type.trade_fee import TokenAmount, TradeFeeBase, TradeFeeSchema
+
+# Backpack fees: https://backpack.exchange/refer/fee-schedule
+DEFAULT_FEES = TradeFeeSchema(
+    maker_percent_fee_decimal=Decimal("0.0002"),  # 0.02% maker fee
+    taker_percent_fee_decimal=Decimal("0.0005"),  # 0.05% taker fee
+)
+
+CENTRALIZED = True
+
+EXAMPLE_PAIR = "BTC-USDC-PERP"
 
 
 def split_trading_pair(trading_pair: str) -> tuple[str, str]:
@@ -257,3 +270,79 @@ def decimal_val_or_none(value: Any) -> Optional[Decimal]:
         return Decimal(str(value))
     except Exception:
         return None
+
+
+def get_next_funding_timestamp(current_timestamp: float) -> float:
+    """
+    Calculate next funding timestamp
+    Backpack funding occurs every 8 hours
+    """
+    int_ts = int(current_timestamp)
+    eight_hours = CONSTANTS.FUNDING_RATE_INTERVAL_HOURS * 60 * 60
+    mod = int_ts % eight_hours
+    return float(int_ts - mod + eight_hours)
+
+
+class BackpackPerpetualConfigMap(BaseConnectorConfigMap):
+    connector: str = "backpack_perpetual"
+    backpack_perpetual_api_key: SecretStr = Field(
+        default=...,
+        json_schema_extra={
+            "prompt": "Enter your Backpack Perpetual API key (public key)",
+            "is_secure": True,
+            "is_connect_key": True,
+            "prompt_on_new": True,
+        }
+    )
+    backpack_perpetual_api_secret: SecretStr = Field(
+        default=...,
+        json_schema_extra={
+            "prompt": "Enter your Backpack Perpetual API secret (private key)", 
+            "is_secure": True,
+            "is_connect_key": True,
+            "prompt_on_new": True,
+        },
+    )
+    model_config = ConfigDict(title="backpack_perpetual")
+
+
+KEYS = BackpackPerpetualConfigMap.model_construct()
+
+# Testnet configuration (if Backpack provides testnet)
+OTHER_DOMAINS = ["backpack_perpetual_testnet"]
+OTHER_DOMAINS_PARAMETER = {"backpack_perpetual_testnet": "backpack_perpetual_testnet"}
+OTHER_DOMAINS_EXAMPLE_PAIR = {"backpack_perpetual_testnet": "BTC-USDC-PERP"}
+OTHER_DOMAINS_DEFAULT_FEES = {
+    "backpack_perpetual_testnet": TradeFeeSchema(
+        maker_percent_fee_decimal=Decimal("0.0002"),
+        taker_percent_fee_decimal=Decimal("0.0005"),
+    )
+}
+
+
+class BackpackPerpetualTestnetConfigMap(BaseConnectorConfigMap):
+    connector: str = "backpack_perpetual_testnet"
+    backpack_perpetual_testnet_api_key: SecretStr = Field(
+        default=...,
+        json_schema_extra={
+            "prompt": "Enter your Backpack Perpetual Testnet API key (public key)",
+            "is_secure": True,
+            "is_connect_key": True,
+            "prompt_on_new": True,
+        }
+    )
+    backpack_perpetual_testnet_api_secret: SecretStr = Field(
+        default=...,
+        json_schema_extra={
+            "prompt": "Enter your Backpack Perpetual Testnet API secret (private key)",
+            "is_secure": True,
+            "is_connect_key": True,
+            "prompt_on_new": True,
+        },
+    )
+    model_config = ConfigDict(title="backpack_perpetual_testnet")
+
+
+OTHER_DOMAINS_KEYS = {
+    "backpack_perpetual_testnet": BackpackPerpetualTestnetConfigMap.model_construct()
+}
