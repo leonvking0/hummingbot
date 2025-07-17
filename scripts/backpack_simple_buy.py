@@ -39,7 +39,7 @@ class BackpackSimpleBuy(ScriptStrategyBase):
         cls.markets = {config.exchange: {config.trading_pair}}
 
     def __init__(self, connectors: Dict[str, ConnectorBase], config: BackpackSimpleBuyConfig):
-        super().__init__(connectors, config)
+        super().__init__(connectors)
         self.config = config
 
     def on_tick(self):
