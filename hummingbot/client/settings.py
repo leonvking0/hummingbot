@@ -281,6 +281,17 @@ class ConnectorSetting(NamedTuple):
                 )
         elif not self.is_sub_domain:
             params = api_keys
+            # Handle key mapping for backpack connectors
+            if self.name == "backpack":
+                if "backpack_api_key" in params:
+                    params["api_key"] = params.pop("backpack_api_key")
+                if "backpack_api_secret" in params:
+                    params["api_secret"] = params.pop("backpack_api_secret")
+            elif self.name == "backpack_perpetual":
+                if "backpack_perpetual_api_key" in params:
+                    params["api_key"] = params.pop("backpack_perpetual_api_key")
+                if "backpack_perpetual_api_secret" in params:
+                    params["api_secret"] = params.pop("backpack_perpetual_api_secret")
         else:
             params: Dict[str, Any] = {k.replace(self.name, self.parent_name): v for k, v in api_keys.items()}
             params["domain"] = self.domain_parameter

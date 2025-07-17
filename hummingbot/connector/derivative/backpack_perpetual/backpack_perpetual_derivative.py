@@ -446,15 +446,21 @@ class BackpackPerpetualDerivative(PerpetualDerivativePyBase):
         Initialize trading pair symbols from exchange info
         Maps exchange symbols to standard trading pair format
         """
+        from bidict import bidict
+        
+        mapping = bidict()
+        
         # For Backpack, the exchange info is a list of markets
         if isinstance(exchange_info, list):
             for market_info in exchange_info:
                 exchange_symbol = market_info.get("symbol", "")
                 if exchange_symbol:
                     trading_pair = utils.convert_from_exchange_trading_pair(exchange_symbol)
-                    self._set_trading_pair_symbol_map(exchange_symbol, trading_pair)
+                    mapping[exchange_symbol] = trading_pair
         else:
             # Handle case where exchange_info might be a dict
             self.logger().warning(
                 f"Unexpected exchange info format: {type(exchange_info)}. Expected list."
             )
+        
+        self._set_trading_pair_symbol_map(mapping)
