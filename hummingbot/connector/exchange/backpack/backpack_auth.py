@@ -90,8 +90,15 @@ class BackpackAuth(AuthBase):
         timestamp = int(time.time() * 1000)
         window = CONSTANTS.DEFAULT_REQUEST_WINDOW
 
+        # Store the method temporarily for instruction determination
+        self._current_method = request.method.name if hasattr(request, 'method') else None
+        
         # Determine instruction based on endpoint
         instruction = self._get_instruction_for_endpoint(request.url)
+        
+        # Clean up temporary method storage
+        if hasattr(self, '_current_method'):
+            delattr(self, '_current_method')
 
         # Get parameters from either body or query
         params = None
@@ -183,6 +190,17 @@ class BackpackAuth(AuthBase):
 
         # Extract the path from the URL
         path = url.split("?")[0]
+        
+        # Special handling for order-related endpoints
+        if path.endswith("/order") or path.endswith("/order/execute"):
+            # Check if this is a POST (execute) or DELETE (cancel) request
+            # This will be determined by the context when called
+            if hasattr(self, '_current_method'):
+                if self._current_method == 'POST':
+                    return "orderExecute"
+                elif self._current_method == 'DELETE':
+                    return "orderCancel"
+        
         for endpoint, instruction in instruction_map.items():
             if endpoint in path:
                 return instruction

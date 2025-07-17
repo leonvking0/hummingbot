@@ -71,6 +71,7 @@ def main():
         "psutil>=5.9.5",
         "pydantic>=2",
         "pyjwt>=2.3.0",
+        "PyNaCl>=1.5.0",
         "pyperclip>=1.8.2",
         "requests>=2.31.0",
         "ruamel.yaml>=0.2.5",

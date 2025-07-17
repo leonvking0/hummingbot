@@ -12,10 +12,12 @@ from hummingbot.connector.exchange.backpack.backpack_api_order_book_data_source 
 from hummingbot.connector.exchange.backpack.backpack_auth import BackpackAuth
 from hummingbot.connector.exchange_py_base import ExchangePyBase
 from hummingbot.connector.trading_rule import TradingRule
+from hummingbot.connector.utils import get_new_client_order_id
 from hummingbot.core.api_throttler.async_throttler import AsyncThrottler
 from hummingbot.core.data_type.common import OrderType, TradeType
-from hummingbot.core.data_type.in_flight_order import InFlightOrder, OrderState
+from hummingbot.core.data_type.in_flight_order import InFlightOrder, OrderState, OrderUpdate, TradeUpdate
 from hummingbot.core.data_type.order_book_tracker_data_source import OrderBookTrackerDataSource
+from hummingbot.core.data_type.trade_fee import TokenAmount, TradeFeeBase
 from hummingbot.core.data_type.user_stream_tracker_data_source import UserStreamTrackerDataSource
 from hummingbot.core.utils.async_utils import safe_ensure_future
 from hummingbot.core.web_assistant.auth import AuthBase
@@ -225,9 +227,30 @@ class BackpackExchange(ExchangePyBase):
             )
 
     async def _update_balances(self):
-        """Update account balances"""
-        # Not implemented for public API only
-        pass
+        """Update account balances from the exchange"""
+        try:
+            # Query capital/balances endpoint
+            response = await self._api_get(
+                path_url=CONSTANTS.BALANCES_PATH_URL,
+                is_auth_required=True
+            )
+            
+            # Update available and total balances
+            for balance_data in response:
+                asset = balance_data.get("symbol", "")
+                available = Decimal(str(balance_data.get("available", "0")))
+                locked = Decimal(str(balance_data.get("locked", "0"))) 
+                total = available + locked
+                
+                self._account_available_balances[asset] = available
+                self._account_balances[asset] = total
+                
+        except Exception as e:
+            self.logger().error(
+                f"Error updating balances. Error: {str(e)}",
+                exc_info=True
+            )
+            raise
 
     async def _place_order(self,
                           order_id: str,
@@ -237,14 +260,130 @@ class BackpackExchange(ExchangePyBase):
                           order_type: OrderType,
                           price: Decimal,
                           **kwargs) -> str:
-        """Place an order"""
-        # Not implemented for public API only
-        raise NotImplementedError("Order placement not implemented for public API only")
+        """
+        Place an order on the exchange
+        
+        :param order_id: Client order ID
+        :param trading_pair: Trading pair
+        :param amount: Order amount
+        :param trade_type: Buy or Sell
+        :param order_type: Limit or Market
+        :param price: Order price (ignored for market orders)
+        :return: Exchange order ID
+        """
+        try:
+            # Convert trading pair to exchange format
+            exchange_symbol = utils.convert_to_exchange_trading_pair(trading_pair)
+            
+            # Build order request payload
+            order_data = {
+                "symbol": exchange_symbol,
+                "side": CONSTANTS.TRADE_TYPE_MAP[trade_type],
+                "orderType": CONSTANTS.ORDER_TYPE_MAP[order_type],
+                "quantity": str(amount),
+            }
+            
+            # Add price for limit orders
+            if order_type == OrderType.LIMIT:
+                order_data["price"] = str(price)
+            
+            # Add optional parameters
+            if "time_in_force" in kwargs:
+                order_data["timeInForce"] = kwargs["time_in_force"]
+            else:
+                order_data["timeInForce"] = CONSTANTS.DEFAULT_TIME_IN_FORCE
+                
+            # Add client ID if we can fit it (Backpack uses uint32)
+            try:
+                # Extract numeric part from order_id if it contains prefix
+                numeric_id = order_id.split("-")[-1] if "-" in order_id else order_id
+                # Try to convert to int and check if it fits in uint32
+                client_id = int(numeric_id)
+                if 0 <= client_id <= 4294967295:  # uint32 max
+                    order_data["clientId"] = client_id
+            except (ValueError, OverflowError):
+                # If conversion fails, skip client ID
+                pass
+            
+            # Add any additional parameters from kwargs
+            if "post_only" in kwargs and kwargs["post_only"]:
+                order_data["postOnly"] = True
+                
+            # Send order to exchange
+            response = await self._api_post(
+                path_url=CONSTANTS.ORDER_PATH_URL,
+                data=order_data,
+                is_auth_required=True
+            )
+            
+            # Extract exchange order ID from response
+            exchange_order_id = str(response.get("id", ""))
+            
+            if not exchange_order_id:
+                raise ValueError(f"No order ID returned from exchange: {response}")
+                
+            return exchange_order_id
+            
+        except Exception as e:
+            self.logger().error(
+                f"Error placing order {order_id}. Error: {str(e)}",
+                exc_info=True
+            )
+            raise
 
     async def _place_cancel(self, order_id: str, tracked_order: InFlightOrder):
-        """Cancel an order"""
-        # Not implemented for public API only
-        raise NotImplementedError("Order cancellation not implemented for public API only")
+        """
+        Cancel an order on the exchange
+        
+        :param order_id: Client order ID
+        :param tracked_order: In-flight order to cancel
+        """
+        try:
+            exchange_order_id = await tracked_order.get_exchange_order_id()
+            
+            # Build cancel request payload
+            cancel_data = {
+                "symbol": utils.convert_to_exchange_trading_pair(tracked_order.trading_pair),
+                "orderId": exchange_order_id
+            }
+            
+            # Alternatively, use clientId if available and exchange order ID is not yet known
+            if not exchange_order_id and tracked_order.client_order_id:
+                try:
+                    # Extract numeric part from client order ID
+                    numeric_id = tracked_order.client_order_id.split("-")[-1] if "-" in tracked_order.client_order_id else tracked_order.client_order_id
+                    client_id = int(numeric_id)
+                    if 0 <= client_id <= 4294967295:  # uint32 max
+                        cancel_data = {
+                            "symbol": utils.convert_to_exchange_trading_pair(tracked_order.trading_pair),
+                            "clientId": client_id
+                        }
+                except (ValueError, OverflowError):
+                    pass
+            
+            # Send cancel request
+            response = await self._api_delete(
+                path_url=CONSTANTS.ORDER_PATH_URL,
+                data=cancel_data,
+                is_auth_required=True
+            )
+            
+            # Check if cancellation was successful
+            if response.get("status") in ["Cancelled", "Filled"]:
+                return True
+                
+            # Log any unexpected response
+            self.logger().warning(
+                f"Unexpected response when cancelling order {order_id}: {response}"
+            )
+            return False
+            
+        except Exception as e:
+            self.logger().error(
+                f"Error cancelling order {order_id}. Error: {str(e)}",
+                exc_info=True
+            )
+            raise
 
     async def _format_trading_rules(self, exchange_info_dict: Dict[str, Any]) -> List[TradingRule]:
         """Format trading rules from exchange info"""
@@ -296,6 +435,7 @@ class BackpackExchange(ExchangePyBase):
     async def _api_delete(self,
                          path_url: str,
                          params: Optional[Dict[str, Any]] = None,
+                         data: Optional[Dict[str, Any]] = None,
                          is_auth_required: bool = False,
                          limit_id: Optional[str] = None) -> Any:
         """Execute DELETE request"""
@@ -310,29 +450,175 @@ class BackpackExchange(ExchangePyBase):
             url=url,
             throttler_limit_id=limit_id or path_url,
             params=params,
+            data=data,
             method=RESTMethod.DELETE,
             is_auth_required=is_auth_required
         )
 
     async def _update_order_status(self):
-        """Update order status"""
-        # Not implemented for public API only
-        pass
+        """
+        Update status of all in-flight orders by querying the exchange
+        """
+        # Get list of in-flight orders that need status updates
+        tracked_orders = list(self.in_flight_orders.values())
+        
+        if not tracked_orders:
+            return
+            
+        try:
+            # Query all open orders from exchange
+            open_orders = await self._api_get(
+                path_url=CONSTANTS.ORDERS_PATH_URL,
+                is_auth_required=True
+            )
+            
+            # Create a map of order IDs for quick lookup
+            open_order_ids = {str(order.get("id")): order for order in open_orders}
+            open_client_ids = {}
+            
+            # Also map by client ID if available
+            for order in open_orders:
+                if "clientId" in order:
+                    open_client_ids[str(order["clientId"])] = order
+            
+            # Update status of tracked orders
+            for tracked_order in tracked_orders:
+                exchange_order_id = await tracked_order.get_exchange_order_id()
+                
+                # Try to find order by exchange ID or client ID
+                exchange_order = None
+                if exchange_order_id and exchange_order_id in open_order_ids:
+                    exchange_order = open_order_ids[exchange_order_id]
+                elif tracked_order.client_order_id:
+                    # Try to extract numeric client ID
+                    try:
+                        numeric_id = tracked_order.client_order_id.split("-")[-1]
+                        if numeric_id in open_client_ids:
+                            exchange_order = open_client_ids[numeric_id]
+                    except:
+                        pass
+                
+                if exchange_order:
+                    # Update order status from exchange data
+                    await self._process_order_update(tracked_order, exchange_order)
+                else:
+                    # Order not found in open orders - might be filled or cancelled
+                    # Request specific order status
+                    try:
+                        order_update = await self._request_order_status(tracked_order)
+                        if order_update:
+                            tracked_order.update_with_order_update(order_update)
+                    except Exception as e:
+                        self.logger().warning(
+                            f"Failed to get status for order {tracked_order.client_order_id}: {e}"
+                        )
+                        
+        except Exception as e:
+            self.logger().error(
+                f"Error updating order status. Error: {str(e)}",
+                exc_info=True
+            )
 
     async def _user_stream_event_listener(self):
-        """Listen to user stream events"""
-        # Not implemented for public API only
+        """
+        Listen to user stream events for real-time order and balance updates
+        """
+        # This would connect to WebSocket for real-time updates
+        # For now, we'll rely on polling via _update_order_status
+        # Full implementation would subscribe to account.orderUpdate stream
         pass
 
-    async def _all_trade_updates_for_order(self, order: InFlightOrder) -> List[Dict[str, Any]]:
-        """Get all trade updates for an order"""
-        # Not implemented for public API only
-        return []
+    async def _all_trade_updates_for_order(self, order: InFlightOrder) -> List[TradeUpdate]:
+        """
+        Get all trade updates (fills) for a specific order
+        
+        :param order: The order to get fills for
+        :return: List of trade updates
+        """
+        trade_updates = []
+        
+        try:
+            exchange_order_id = await order.get_exchange_order_id()
+            if not exchange_order_id:
+                return trade_updates
+                
+            # Query fills for this order
+            fills = await self._api_get(
+                path_url=CONSTANTS.FILLS_PATH_URL,
+                params={
+                    "orderId": exchange_order_id,
+                    "symbol": utils.convert_to_exchange_trading_pair(order.trading_pair)
+                },
+                is_auth_required=True
+            )
+            
+            # Convert fills to TradeUpdate objects
+            for fill in fills:
+                trade_id = str(fill.get("tradeId", fill.get("id", "")))
+                if not trade_id:
+                    continue
+                    
+                trade_update = TradeUpdate(
+                    trade_id=trade_id,
+                    client_order_id=order.client_order_id,
+                    exchange_order_id=exchange_order_id,
+                    trading_pair=order.trading_pair,
+                    fill_timestamp=float(fill.get("timestamp", 0)) / 1000.0,  # Convert ms to seconds
+                    fill_price=Decimal(str(fill.get("price", "0"))),
+                    fill_base_amount=Decimal(str(fill.get("quantity", "0"))),
+                    fill_quote_amount=Decimal(str(fill.get("price", "0"))) * Decimal(str(fill.get("quantity", "0"))),
+                    fee=self._get_trade_fee_from_fill(fill),
+                )
+                trade_updates.append(trade_update)
+                
+        except Exception as e:
+            self.logger().error(
+                f"Error getting trade updates for order {order.client_order_id}. Error: {str(e)}",
+                exc_info=True
+            )
+            
+        return trade_updates
 
-    async def _request_order_status(self, tracked_order: InFlightOrder) -> Dict[str, Any]:
-        """Request order status"""
-        # Not implemented for public API only
-        return {}
+    async def _request_order_status(self, tracked_order: InFlightOrder) -> OrderUpdate:
+        """
+        Request the current status of a specific order from the exchange
+        
+        :param tracked_order: The order to get status for
+        :return: OrderUpdate with current status
+        """
+        try:
+            exchange_order_id = await tracked_order.get_exchange_order_id()
+            
+            # Build query parameters
+            params = {}
+            if exchange_order_id:
+                params["orderId"] = exchange_order_id
+            else:
+                # Try using client ID
+                try:
+                    numeric_id = tracked_order.client_order_id.split("-")[-1]
+                    client_id = int(numeric_id)
+                    if 0 <= client_id <= 4294967295:
+                        params["clientId"] = client_id
+                except:
+                    raise ValueError("No valid order ID available for status query")
+            
+            # Query order status
+            response = await self._api_get(
+                path_url=CONSTANTS.ORDER_PATH_URL,
+                params=params,
+                is_auth_required=True
+            )
+            
+            # Convert response to OrderUpdate
+            return self._create_order_update_from_exchange_order(response, tracked_order)
+            
+        except Exception as e:
+            self.logger().error(
+                f"Error requesting order status for {tracked_order.client_order_id}. Error: {str(e)}",
+                exc_info=True
+            )
+            raise
 
     def _initialize_trading_pair_symbols_from_exchange_info(self, exchange_info: Dict[str, Any]):
         """Initialize trading pair symbols"""
@@ -350,6 +636,69 @@ class BackpackExchange(ExchangePyBase):
         )
         
         return float(ticker.get("lastPrice", 0))
+    
+    def _create_order_update_from_exchange_order(self, order_data: Dict[str, Any], tracked_order: InFlightOrder) -> OrderUpdate:
+        """
+        Create an OrderUpdate object from exchange order data
+        
+        :param order_data: Order data from exchange
+        :param tracked_order: The tracked order
+        :return: OrderUpdate object
+        """
+        # Map exchange status to OrderState
+        exchange_status = order_data.get("status", "")
+        new_state = CONSTANTS.ORDER_STATE_MAP.get(exchange_status, OrderState.OPEN)
+        
+        # Create OrderUpdate
+        order_update = OrderUpdate(
+            trading_pair=tracked_order.trading_pair,
+            update_timestamp=time.time(),
+            new_state=new_state,
+            client_order_id=tracked_order.client_order_id,
+            exchange_order_id=str(order_data.get("id", "")),
+        )
+        
+        return order_update
+    
+    async def _process_order_update(self, tracked_order: InFlightOrder, order_data: Dict[str, Any]):
+        """
+        Process an order update from exchange data
+        
+        :param tracked_order: The tracked order to update
+        :param order_data: Order data from exchange
+        """
+        order_update = self._create_order_update_from_exchange_order(order_data, tracked_order)
+        tracked_order.update_with_order_update(order_update)
+        
+        # If order is filled, get trade updates
+        if order_update.new_state == OrderState.FILLED:
+            trade_updates = await self._all_trade_updates_for_order(tracked_order)
+            for trade_update in trade_updates:
+                tracked_order.update_with_trade_update(trade_update)
+    
+    def _get_trade_fee_from_fill(self, fill_data: Dict[str, Any]) -> TradeFeeBase:
+        """
+        Extract trade fee information from a fill
+        
+        :param fill_data: Fill data from exchange
+        :return: TradeFeeBase object
+        """
+        fee_amount = Decimal(str(fill_data.get("fee", "0")))
+        fee_asset = fill_data.get("feeSymbol", "")
+        
+        if fee_amount > 0 and fee_asset:
+            return TradeFeeBase.new_spot_fee(
+                fee_schema=self.trade_fee_schema(),
+                trade_type=TradeType.BUY if fill_data.get("side") == "Bid" else TradeType.SELL,
+                percent_token=fee_asset,
+                flat_fees=[TokenAmount(amount=fee_amount, token=fee_asset)]
+            )
+        else:
+            # Return default fee if no fee info available
+            return TradeFeeBase.new_spot_fee(
+                fee_schema=self.trade_fee_schema(),
+                trade_type=TradeType.BUY if fill_data.get("side") == "Bid" else TradeType.SELL,
+            )
 
     def _is_order_not_found_during_cancelation_error(self, cancelation_exception: Exception) -> bool:
         """
