@@ -17,7 +17,7 @@ from hummingbot.connector.perpetual_derivative_py_base import PerpetualDerivativ
 from hummingbot.connector.trading_rule import TradingRule
 from hummingbot.core.api_throttler.async_throttler import AsyncThrottler
 from hummingbot.core.data_type.common import OrderType, PositionAction, PositionMode, PositionSide, TradeType
-from hummingbot.core.data_type.in_flight_order import InFlightOrder
+from hummingbot.core.data_type.in_flight_order import InFlightOrder, OrderState, OrderUpdate, TradeUpdate
 from hummingbot.core.data_type.order_book_tracker_data_source import OrderBookTrackerDataSource
 from hummingbot.core.data_type.trade_fee import TokenAmount, TradeFeeBase
 from hummingbot.core.data_type.user_stream_tracker_data_source import UserStreamTrackerDataSource
@@ -397,3 +397,64 @@ class BackpackPerpetualDerivative(PerpetualDerivativePyBase):
         Does nothing for public API only implementation
         """
         pass
+
+    def _is_request_exception_related_to_time_synchronizer(self, request_exception: Exception) -> bool:
+        """
+        Check if the request exception is related to time synchronization issues
+        """
+        error_message = str(request_exception).lower()
+        # Check for common time-related errors
+        return (
+            "timestamp" in error_message or
+            "time" in error_message and "sync" in error_message or
+            "clock skew" in error_message
+        )
+
+    async def _all_trade_updates_for_order(self, order: InFlightOrder) -> List[TradeUpdate]:
+        """
+        Fetch all trade updates for a specific order
+        This is a placeholder for public API only implementation
+        """
+        # For public API only, we cannot fetch trade updates
+        return []
+
+    async def _request_order_status(self, tracked_order: InFlightOrder) -> OrderUpdate:
+        """
+        Request the status of a tracked order
+        This is a placeholder for public API only implementation
+        """
+        # For public API only, we cannot fetch order status
+        # Return a canceled status to avoid blocking the order tracker
+        return OrderUpdate(
+            trading_pair=tracked_order.trading_pair,
+            update_timestamp=self.current_timestamp,
+            new_state=OrderState.CANCELED,
+            client_order_id=tracked_order.client_order_id,
+        )
+
+    async def _update_trading_fees(self):
+        """
+        Update trading fees from the exchange
+        This is a placeholder for public API only implementation
+        """
+        # Trading fees would require authenticated API access
+        # For now, we'll use default fees
+        pass
+
+    def _initialize_trading_pair_symbols_from_exchange_info(self, exchange_info: Dict[str, Any]):
+        """
+        Initialize trading pair symbols from exchange info
+        Maps exchange symbols to standard trading pair format
+        """
+        # For Backpack, the exchange info is a list of markets
+        if isinstance(exchange_info, list):
+            for market_info in exchange_info:
+                exchange_symbol = market_info.get("symbol", "")
+                if exchange_symbol:
+                    trading_pair = utils.convert_from_exchange_trading_pair(exchange_symbol)
+                    self._set_trading_pair_symbol_map(exchange_symbol, trading_pair)
+        else:
+            # Handle case where exchange_info might be a dict
+            self.logger().warning(
+                f"Unexpected exchange info format: {type(exchange_info)}. Expected list."
+            )

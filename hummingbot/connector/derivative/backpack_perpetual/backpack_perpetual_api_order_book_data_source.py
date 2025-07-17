@@ -440,3 +440,14 @@ class BackpackPerpetualAPIOrderBookDataSource(PerpetualAPIOrderBookDataSource):
         """Get throttler instance with configured rate limits"""
         throttler = AsyncThrottler(CONSTANTS.RATE_LIMITS)
         return throttler
+
+    async def _parse_funding_info_message(self, raw_message: Dict[str, Any], message_queue: asyncio.Queue):
+        """
+        Parse funding info message from raw WebSocket message
+        
+        :param raw_message: Raw message from WebSocket
+        :param message_queue: Queue to put parsed funding info updates
+        """
+        # For Backpack, we handle this in listen_for_funding_info directly
+        # This method is required by the abstract base class but not used in our implementation
+        pass
