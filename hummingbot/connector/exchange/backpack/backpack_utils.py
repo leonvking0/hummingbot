@@ -1,6 +1,9 @@
 from decimal import Decimal
 from typing import Any, Dict, List, Optional, Tuple
 
+from pydantic import ConfigDict, Field, SecretStr
+
+from hummingbot.client.config.config_data_types import BaseConnectorConfigMap
 from hummingbot.connector.exchange.backpack import backpack_constants as CONSTANTS
 from hummingbot.core.data_type.common import OrderType, TradeType
 from hummingbot.core.data_type.in_flight_order import OrderState
@@ -237,3 +240,46 @@ def is_valid_trading_pair(trading_pair: str) -> bool:
     """
     parts = trading_pair.split(CONSTANTS.TRADING_PAIR_SPLITTER)
     return len(parts) == 2 and all(part for part in parts)
+
+
+# Configuration required for automatic connector discovery
+DEFAULT_FEES = TradeFeeSchema(
+    maker_percent_fee_decimal=Decimal("0.0002"),  # 0.02% maker fee
+    taker_percent_fee_decimal=Decimal("0.0005"),  # 0.05% taker fee
+)
+
+CENTRALIZED = True
+EXAMPLE_PAIR = "SOL-USDC"
+
+OTHER_DOMAINS = ["backpack_testnet"]
+OTHER_DOMAINS_PARAMETER = {"backpack_testnet": "testnet"}
+OTHER_DOMAINS_EXAMPLE_PAIR = {"backpack_testnet": "SOL-USDC"}
+OTHER_DOMAINS_DEFAULT_FEES = {"backpack_testnet": DEFAULT_FEES}
+
+
+class BackpackConfigMap(BaseConnectorConfigMap):
+    connector: str = "backpack"
+    backpack_api_key: SecretStr = Field(
+        default=...,
+        json_schema_extra={
+            "prompt": lambda cm: "Enter your Backpack API key (Base64 encoded ED25519 public key)",
+            "is_secure": True,
+            "is_connect_key": True,
+            "prompt_on_new": True,
+        }
+    )
+    backpack_api_secret: SecretStr = Field(
+        default=...,
+        json_schema_extra={
+            "prompt": lambda cm: "Enter your Backpack API secret (Base64 encoded ED25519 private key)",
+            "is_secure": True,
+            "is_connect_key": True,
+            "prompt_on_new": True,
+        }
+    )
+    model_config = ConfigDict(title="backpack")
+
+
+KEYS = BackpackConfigMap.model_construct()
+
+OTHER_DOMAINS_KEYS = {"backpack_testnet": BackpackConfigMap.model_construct()}
