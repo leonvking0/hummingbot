@@ -1,0 +1,112 @@
+# Backpack Exchange Debug Configuration
+# This configuration enables verbose logging for debugging trading issues
+
+# Logging Configuration
+logging:
+  # Set global log level to DEBUG for maximum verbosity
+  level: DEBUG
+  
+  # Specific logger configurations
+  loggers:
+    # Backpack exchange connector
+    hummingbot.connector.exchange.backpack:
+      level: DEBUG
+      
+    # Backpack authentication
+    hummingbot.connector.exchange.backpack.backpack_auth:
+      level: DEBUG
+      
+    # Backpack web utilities
+    hummingbot.connector.exchange.backpack.backpack_web_utils:
+      level: DEBUG
+      
+    # Core web assistant for HTTP requests
+    hummingbot.core.web_assistant:
+      level: DEBUG
+      
+    # Order tracker
+    hummingbot.core.data_type.order_book_tracker:
+      level: INFO
+      
+    # Rate limiter
+    hummingbot.core.api_throttler:
+      level: INFO
+
+# Test Configuration
+test:
+  # Trading pair to test with
+  trading_pair: "SOL-USDC"
+  
+  # Test order parameters
+  order:
+    # Small amount for testing
+    amount: 0.001
+    
+    # Price offset from mid price (10% = 0.1)
+    price_discount: 0.1
+    
+    # Time to wait before cancelling (seconds)
+    cancel_after: 10
+  
+  # API timeouts
+  timeouts:
+    # Request timeout in seconds
+    request_timeout: 30
+    
+    # Order status check interval
+    status_check_interval: 2
+
+# Debug Features
+debug:
+  # Log all HTTP requests and responses
+  log_http_requests: true
+  
+  # Log request headers (careful with sensitive data)
+  log_headers: true
+  
+  # Log full response bodies
+  log_response_body: true
+  
+  # Save requests/responses to file
+  save_to_file: true
+  log_file: "backpack_debug_requests.log"
+  
+  # Signature debugging
+  signature:
+    # Log signature generation steps
+    log_generation: true
+    
+    # Log the message being signed
+    log_message: true
+    
+    # Log the final signature
+    log_signature: true
+
+# Error Handling
+error_handling:
+  # Number of retries for failed requests
+  max_retries: 3
+  
+  # Delay between retries (seconds)
+  retry_delay: 1
+  
+  # Log full stack traces
+  log_stack_traces: true
+  
+  # Specific error codes to watch for
+  watch_errors:
+    - "INVALID_SIGNATURE"
+    - "INVALID_ORDER"
+    - "INSUFFICIENT_BALANCE"
+    - "RATE_LIMIT_EXCEEDED"
+
+# Performance Monitoring
+performance:
+  # Log request latencies
+  log_latencies: true
+  
+  # Warn if request takes longer than (ms)
+  latency_warning_threshold: 1000
+  
+  # Log memory usage
+  log_memory_usage: true
