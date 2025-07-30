@@ -33,10 +33,10 @@ Hummingbot is an open-source framework for designing and deploying automated tra
 make build
 ```
 
-### Enter the python environment
-```
-conda activate hummingbot
-```
+### Enviornment instructions
+- To run python scripts, use: conda run -n hummingbot python <script>
+- To compile, use: make build
+- To run tests, use: make test
 
 ### Running the Application
 ```bash
