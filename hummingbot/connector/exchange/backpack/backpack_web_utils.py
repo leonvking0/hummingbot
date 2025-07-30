@@ -1,4 +1,5 @@
 from typing import Any, Dict, Optional
+import time
 
 import hummingbot.connector.exchange.backpack.backpack_constants as CONSTANTS
 from hummingbot.connector.time_synchronizer import TimeSynchronizer
@@ -164,3 +165,20 @@ def is_exchange_information_valid(exchange_info: Dict[str, Any]) -> bool:
         and "symbol" in exchange_info
         and "filters" in exchange_info
     )
+
+
+async def get_current_server_time(
+    throttler: Optional[AsyncThrottler] = None,
+    domain: str = CONSTANTS.DEFAULT_DOMAIN,
+) -> float:
+    """
+    Get current server time from Backpack
+    
+    Note: Backpack doesn't have a dedicated time endpoint,
+    so we return local time. This is sufficient for public API operations.
+    
+    :param throttler: The throttler to use (not used for local time)
+    :param domain: The domain to use (not used for local time)
+    :return: Current timestamp in seconds
+    """
+    return time.time()

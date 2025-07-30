@@ -31,8 +31,13 @@ if TYPE_CHECKING:
 class BackpackExchange(ExchangePyBase):
     """
     Backpack Exchange connector for Hummingbot
-    Currently implements public API endpoints only
+    PUBLIC API ONLY implementation - no trading functionality
+    
+    Note: This connector only supports market data (order books, tickers, etc.)
+    Trading operations are not supported even if API credentials are provided.
     """
+    
+    web_utils = web_utils
 
     def __init__(
         self,
@@ -47,7 +52,13 @@ class BackpackExchange(ExchangePyBase):
         self._api_secret = api_secret
         self._domain = domain
         self._trading_pairs = trading_pairs or []
-        self._trading_required = trading_required
+        # Force public-only mode regardless of API credentials
+        self._trading_required = False  # Always False for public-only implementation
+        
+        # Debug logging
+        self.logger().info(f"BackpackExchange initialized in PUBLIC-ONLY mode, "
+                          f"api_key={'provided' if api_key else 'empty'} (ignored), "
+                          f"trading_pairs={trading_pairs}")
         
         super().__init__(client_config_map)
 
@@ -121,6 +132,24 @@ class BackpackExchange(ExchangePyBase):
     def is_trading_required(self) -> bool:
         """Whether trading is required"""
         return self._trading_required
+    
+    @property
+    def ready(self) -> bool:
+        """
+        Override to add debug logging
+        """
+        status = self.status_dict
+        is_ready = all(status.values())
+        
+        if not is_ready:
+            not_ready_items = [k for k, v in status.items() if not v]
+            # Use warning level so it shows up even with INFO log level
+            self.logger().warning(f"BackpackExchange not ready. Failed checks: {not_ready_items}, Full status: {status}")
+            self.logger().warning(f"Additional debug info: is_trading_required={self.is_trading_required}, "
+                                f"symbol_map_ready={self.trading_pair_symbol_map_ready()}, "
+                                f"order_book_ready={self.order_book_tracker.ready if self.order_book_tracker else 'None'}")
+        
+        return is_ready
 
     def supported_order_types(self) -> List[OrderType]:
         """Supported order types"""
@@ -159,6 +188,53 @@ class BackpackExchange(ExchangePyBase):
         For public API only implementation, we return None
         """
         return None
+    
+    def _is_user_stream_initialized(self) -> bool:
+        """
+        Override parent method to handle None user_stream_tracker
+        For public API only, we don't have user streams
+        """
+        if self._user_stream_tracker is None:
+            return True  # Consider it "initialized" for public-only
+        return super()._is_user_stream_initialized()
+    
+    async def start_network(self):
+        """
+        Override parent method to handle public-only implementation
+        """
+        self.logger().debug(f"BackpackExchange.start_network called, is_trading_required={self.is_trading_required}")
+        
+        await self.stop_network()
+        self.order_book_tracker.start()
+        
+        # Initialize trading pair symbol map
+        if not self.trading_pair_symbol_map_ready():
+            self.logger().info("Initializing trading pair symbol map...")
+            await self._initialize_trading_pair_symbol_map()
+        
+        # Only start trading-related tasks if trading is required
+        if self.is_trading_required:
+            self._trading_rules_polling_task = safe_ensure_future(self._trading_rules_polling_loop())
+            self._trading_fees_polling_task = safe_ensure_future(self._trading_fees_polling_loop())
+            self._status_polling_task = safe_ensure_future(self._status_polling_loop())
+            # Skip user stream tracker for public-only implementation
+            if self._user_stream_tracker is not None:
+                self._user_stream_tracker_task = safe_ensure_future(self._user_stream_tracker.start())
+                self._user_stream_event_listener_task = safe_ensure_future(self._user_stream_event_listener())
+            self._lost_orders_update_task = safe_ensure_future(self._lost_orders_update_polling_loop())
+    
+    async def _update_balances(self):
+        """
+        Override to skip balance updates in public-only mode
+        """
+        if not self.is_trading_required:
+            # Set empty balances for public-only mode
+            self._account_balances = {}
+            self._account_available_balances = {}
+            return
+        
+        # If trading is somehow enabled, call parent implementation
+        await super()._update_balances()
 
     def _get_fee(self,
                  base_currency: str,
@@ -226,31 +302,6 @@ class BackpackExchange(ExchangePyBase):
                 exc_info=True
             )
 
-    async def _update_balances(self):
-        """Update account balances from the exchange"""
-        try:
-            # Query capital/balances endpoint
-            response = await self._api_get(
-                path_url=CONSTANTS.BALANCES_PATH_URL,
-                is_auth_required=True
-            )
-            
-            # Update available and total balances
-            for balance_data in response:
-                asset = balance_data.get("symbol", "")
-                available = Decimal(str(balance_data.get("available", "0")))
-                locked = Decimal(str(balance_data.get("locked", "0"))) 
-                total = available + locked
-                
-                self._account_available_balances[asset] = available
-                self._account_balances[asset] = total
-                
-        except Exception as e:
-            self.logger().error(
-                f"Error updating balances. Error: {str(e)}",
-                exc_info=True
-            )
-            raise
 
     async def _place_order(self,
                           order_id: str,
@@ -622,8 +673,24 @@ class BackpackExchange(ExchangePyBase):
 
     def _initialize_trading_pair_symbols_from_exchange_info(self, exchange_info: Dict[str, Any]):
         """Initialize trading pair symbols"""
-        # Not needed for Backpack
-        pass
+        # For Backpack, the symbols are the same (no conversion needed)
+        # But we need to populate the symbol map for the connector to be ready
+        self.logger().debug(f"Initializing trading pair symbols with exchange_info type: {type(exchange_info)}, length: {len(exchange_info) if hasattr(exchange_info, '__len__') else 'N/A'}")
+        
+        mapping = {}
+        
+        if isinstance(exchange_info, list):
+            # Assume exchange_info is a list of market data
+            for market in exchange_info:
+                if "symbol" in market:
+                    # Backpack uses underscores, Hummingbot uses dashes
+                    exchange_symbol = market["symbol"]  # e.g., "SOL_USDC"
+                    hb_symbol = exchange_symbol.replace("_", "-")  # e.g., "SOL-USDC"
+                    mapping[exchange_symbol] = hb_symbol
+        
+        self.logger().info(f"Initialized trading pair symbol map with {len(mapping)} pairs: {mapping}")
+        # Even if no markets, set an empty map so status check passes
+        self._set_trading_pair_symbol_map(mapping)
 
     async def _get_last_traded_price(self, trading_pair: str) -> float:
         """Get last traded price for a trading pair"""
