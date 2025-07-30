@@ -10,6 +10,7 @@ from hummingbot.connector.exchange.backpack import (
 )
 from hummingbot.connector.exchange.backpack.backpack_api_order_book_data_source import BackpackAPIOrderBookDataSource
 from hummingbot.connector.exchange.backpack.backpack_auth import BackpackAuth
+from hummingbot.connector.exchange.backpack.backpack_api_user_stream_data_source import BackpackAPIUserStreamDataSource
 from hummingbot.connector.exchange_py_base import ExchangePyBase
 from hummingbot.connector.trading_rule import TradingRule
 from hummingbot.connector.utils import get_new_client_order_id
@@ -52,12 +53,12 @@ class BackpackExchange(ExchangePyBase):
         self._api_secret = api_secret
         self._domain = domain
         self._trading_pairs = trading_pairs or []
-        # Force public-only mode regardless of API credentials
-        self._trading_required = False  # Always False for public-only implementation
+        self._trading_required = trading_required
         
         # Debug logging
-        self.logger().info(f"BackpackExchange initialized in PUBLIC-ONLY mode, "
-                          f"api_key={'provided' if api_key else 'empty'} (ignored), "
+        self.logger().info(f"BackpackExchange initialized, "
+                          f"api_key={'provided' if api_key else 'empty'}, "
+                          f"trading_required={trading_required}, "
                           f"trading_pairs={trading_pairs}")
         
         super().__init__(client_config_map)
@@ -179,15 +180,27 @@ class BackpackExchange(ExchangePyBase):
 
     def _create_user_stream_data_source(self) -> UserStreamTrackerDataSource:
         """Create user stream data source"""
-        # Not implemented for public API only
-        return None
+        if not self._api_key or not self._api_secret:
+            # Return None for public API only mode
+            return None
+            
+        return BackpackAPIUserStreamDataSource(
+            auth=self.authenticator,
+            trading_pairs=self._trading_pairs,
+            connector=self,
+            api_factory=self._web_assistants_factory,
+            domain=self._domain
+        )
     
     def _create_user_stream_tracker(self):
         """
         Create user stream tracker
-        For public API only implementation, we return None
+        Returns None if no API credentials are provided
         """
-        return None
+        user_stream_data_source = self._create_user_stream_data_source()
+        if user_stream_data_source is None:
+            return None
+        return super()._create_user_stream_tracker()
     
     def _is_user_stream_initialized(self) -> bool:
         """
@@ -574,10 +587,134 @@ class BackpackExchange(ExchangePyBase):
         """
         Listen to user stream events for real-time order and balance updates
         """
-        # This would connect to WebSocket for real-time updates
-        # For now, we'll rely on polling via _update_order_status
-        # Full implementation would subscribe to account.orderUpdate stream
-        pass
+        async for event_message in self._iter_user_event_queue():
+            try:
+                # Backpack order update events
+                event_type = event_message.get("e")
+                
+                if event_type in ["orderAccepted", "orderCancelled", "orderExpired", "orderFill", "orderModified"]:
+                    await self._process_order_update(event_message)
+                else:
+                    self.logger().debug(f"Unknown user stream event type: {event_type}")
+                    
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                self.logger().exception("Unexpected error in user stream listener")
+                await self._sleep(5.0)
+    
+    async def _process_order_update(self, event_message: dict):
+        """
+        Process order update events from the WebSocket
+        """
+        try:
+            # Extract order information
+            event_type = event_message.get("e")
+            client_order_id = str(event_message.get("c", ""))  # May not be present
+            exchange_order_id = str(event_message.get("i", ""))
+            symbol = event_message.get("s", "")
+            
+            # Try to find the order by client order ID or exchange order ID
+            tracked_order = None
+            if client_order_id:
+                tracked_order = self._order_tracker.all_fillable_orders.get(client_order_id)
+            
+            if not tracked_order and exchange_order_id:
+                # Search by exchange order ID
+                for order in self._order_tracker.all_fillable_orders.values():
+                    if order.exchange_order_id == exchange_order_id:
+                        tracked_order = order
+                        break
+            
+            if not tracked_order:
+                return
+            
+            # Process different event types
+            if event_type == "orderAccepted":
+                # Order was accepted
+                order_update = OrderUpdate(
+                    trading_pair=tracked_order.trading_pair,
+                    update_timestamp=event_message.get("E", self.current_timestamp) / 1000,  # Convert from microseconds
+                    new_state=OrderState.OPEN,
+                    client_order_id=tracked_order.client_order_id,
+                    exchange_order_id=exchange_order_id,
+                )
+                self._order_tracker.process_order_update(order_update)
+                
+            elif event_type == "orderCancelled":
+                # Order was cancelled
+                order_update = OrderUpdate(
+                    trading_pair=tracked_order.trading_pair,
+                    update_timestamp=event_message.get("E", self.current_timestamp) / 1000,
+                    new_state=OrderState.CANCELED,
+                    client_order_id=tracked_order.client_order_id,
+                    exchange_order_id=exchange_order_id,
+                )
+                self._order_tracker.process_order_update(order_update)
+                
+            elif event_type == "orderExpired":
+                # Order expired
+                order_update = OrderUpdate(
+                    trading_pair=tracked_order.trading_pair,
+                    update_timestamp=event_message.get("E", self.current_timestamp) / 1000,
+                    new_state=OrderState.CANCELED,
+                    client_order_id=tracked_order.client_order_id,
+                    exchange_order_id=exchange_order_id,
+                )
+                self._order_tracker.process_order_update(order_update)
+                
+            elif event_type == "orderFill":
+                # Order was filled (partially or fully)
+                fill_quantity = Decimal(event_message.get("l", "0"))
+                fill_price = Decimal(event_message.get("L", "0"))
+                executed_quantity = Decimal(event_message.get("z", "0"))
+                fee_amount = Decimal(event_message.get("n", "0"))
+                fee_token = event_message.get("N", "")
+                
+                # Create trade update
+                trade_update = TradeUpdate(
+                    trade_id=str(event_message.get("t", "")),
+                    client_order_id=tracked_order.client_order_id,
+                    exchange_order_id=exchange_order_id,
+                    trading_pair=tracked_order.trading_pair,
+                    fill_timestamp=event_message.get("E", self.current_timestamp) / 1000,
+                    fill_price=fill_price,
+                    fill_base_amount=fill_quantity,
+                    fill_quote_amount=fill_quantity * fill_price,
+                    fee=TradeFeeBase.new_spot_fee(
+                        fee_schema=self.trade_fee_schema(),
+                        trade_type=tracked_order.trade_type,
+                        percent_token=fee_token,
+                        flat_fees=[TokenAmount(amount=fee_amount, token=fee_token)]
+                    ),
+                    is_taker=not event_message.get("m", False)
+                )
+                self._order_tracker.process_trade_update(trade_update)
+                
+                # Check if order is fully filled
+                order_state = event_message.get("X", "")
+                if order_state == "Filled" or executed_quantity >= tracked_order.amount:
+                    order_update = OrderUpdate(
+                        trading_pair=tracked_order.trading_pair,
+                        update_timestamp=event_message.get("E", self.current_timestamp) / 1000,
+                        new_state=OrderState.FILLED,
+                        client_order_id=tracked_order.client_order_id,
+                        exchange_order_id=exchange_order_id,
+                    )
+                    self._order_tracker.process_order_update(order_update)
+                else:
+                    # Partially filled
+                    order_update = OrderUpdate(
+                        trading_pair=tracked_order.trading_pair,
+                        update_timestamp=event_message.get("E", self.current_timestamp) / 1000,
+                        new_state=OrderState.PARTIALLY_FILLED,
+                        client_order_id=tracked_order.client_order_id,
+                        exchange_order_id=exchange_order_id,
+                    )
+                    self._order_tracker.process_order_update(order_update)
+                    
+        except Exception:
+            self.logger().exception(f"Failed to process order update: {event_message}")
 
     async def _all_trade_updates_for_order(self, order: InFlightOrder) -> List[TradeUpdate]:
         """
