@@ -10,6 +10,21 @@ import os
 import sys
 from decimal import Decimal
 from typing import Optional
+from pathlib import Path
+
+# Try to load from .env file if dotenv is available
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    # If dotenv not available, try to load .env manually
+    env_path = Path(__file__).parent / '.env'
+    if env_path.exists():
+        with open(env_path) as f:
+            for line in f:
+                if line.strip() and not line.startswith('#'):
+                    key, value = line.strip().split('=', 1)
+                    os.environ[key] = value
 
 # Add hummingbot to path
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -24,6 +39,7 @@ from hummingbot.core.event.events import (
     OrderCancelledEvent,
     OrderFilledEvent,
     SellOrderCreatedEvent,
+    MarketEvent,
 )
 
 # Configure logging
@@ -70,11 +86,11 @@ class BackpackTradingTest:
             )
             
             # Set up event listeners
-            self.exchange.add_listener(BuyOrderCreatedEvent, self.on_buy_order_created)
-            self.exchange.add_listener(SellOrderCreatedEvent, self.on_sell_order_created)
-            self.exchange.add_listener(OrderFilledEvent, self.on_order_filled)
-            self.exchange.add_listener(OrderCancelledEvent, self.on_order_cancelled)
-            self.exchange.add_listener(MarketOrderFailureEvent, self.on_order_failure)
+            self.exchange.add_listener(MarketEvent.BuyOrderCreated, self.on_buy_order_created)
+            self.exchange.add_listener(MarketEvent.SellOrderCreated, self.on_sell_order_created)
+            self.exchange.add_listener(MarketEvent.OrderFilled, self.on_order_filled)
+            self.exchange.add_listener(MarketEvent.OrderCancelled, self.on_order_cancelled)
+            self.exchange.add_listener(MarketEvent.OrderFailure, self.on_order_failure)
             
             # Start the exchange
             await self.exchange.start_network()

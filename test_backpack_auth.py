@@ -12,6 +12,21 @@ import sys
 import time
 from typing import Dict, Any
 from urllib.parse import urlencode
+from pathlib import Path
+
+# Try to load from .env file if dotenv is available
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    # If dotenv not available, try to load .env manually
+    env_path = Path(__file__).parent / '.env'
+    if env_path.exists():
+        with open(env_path) as f:
+            for line in f:
+                if line.strip() and not line.startswith('#'):
+                    key, value = line.strip().split('=', 1)
+                    os.environ[key] = value
 
 # Add hummingbot to path
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
