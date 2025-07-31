@@ -346,6 +346,14 @@ class BackpackExchange(ExchangePyBase):
             if isinstance(markets, list):
                 for market in markets:
                     try:
+                        # Skip perpetual markets - only handle spot markets
+                        # This is correct because perpetual markets are handled by the separate
+                        # backpack_perpetual connector in /connector/derivative/backpack_perpetual/
+                        market_type = market.get("marketType", "")
+                        if market_type == "PERP":
+                            self.logger().debug(f"Skipping perpetual market {market.get('symbol')}")
+                            continue
+                        
                         # According to API docs, check orderBookState instead of status
                         order_book_state = market.get("orderBookState")
                         if order_book_state and order_book_state not in CONSTANTS.ACTIVE_ORDER_BOOK_STATES:
