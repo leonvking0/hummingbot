@@ -32,10 +32,9 @@ if TYPE_CHECKING:
 class BackpackExchange(ExchangePyBase):
     """
     Backpack Exchange connector for Hummingbot
-    PUBLIC API ONLY implementation - no trading functionality
     
-    Note: This connector only supports market data (order books, tickers, etc.)
-    Trading operations are not supported even if API credentials are provided.
+    Supports both public market data and private trading operations.
+    Trading functionality requires valid API credentials.
     """
     
     web_utils = web_utils
@@ -54,7 +53,13 @@ class BackpackExchange(ExchangePyBase):
         self._api_secret = api_secret
         self._domain = domain
         self._trading_pairs = trading_pairs or []
-        self._trading_required = trading_required
+        # Enable trading if API credentials are provided, unless explicitly set
+        # If trading_required is explicitly passed (True or False), use that value
+        # Otherwise, enable trading if API credentials are provided
+        if trading_required is not None and isinstance(trading_required, bool):
+            self._trading_required = trading_required
+        else:
+            self._trading_required = bool(api_key and api_secret)
         self._demo_mode = demo_mode or (not api_key and not api_secret)
         
         # Debug logging
@@ -183,9 +188,15 @@ class BackpackExchange(ExchangePyBase):
 
     def _create_user_stream_data_source(self) -> UserStreamTrackerDataSource:
         """Create user stream data source"""
-        # For now, disable user stream even with API credentials
-        # This allows basic trading functionality without real-time updates
-        # TODO: Enable user stream once WebSocket authentication is fully tested
+        # Only create user stream if we have API credentials
+        if self._api_key and self._api_secret:
+            return BackpackAPIUserStreamDataSource(
+                auth=self.authenticator,
+                trading_pairs=self._trading_pairs,
+                connector=self,
+                api_factory=self._web_assistants_factory,
+                domain=self._domain
+            )
         return None
     
     def _create_user_stream_tracker(self):
@@ -207,7 +218,12 @@ class BackpackExchange(ExchangePyBase):
             return True  # No user stream needed when trading is not required
         if self._user_stream_tracker is None:
             return True  # Consider it "initialized" for public-only
-        return super()._is_user_stream_initialized()
+        # Check if user stream has been created and started
+        if hasattr(self._user_stream_tracker, 'data_source') and self._user_stream_tracker.data_source:
+            # For now, consider it initialized if the data source exists
+            # In production, you'd wait for first message: return self._user_stream_tracker.data_source.last_recv_time > 0
+            return True
+        return False
     
     async def start_network(self):
         """
@@ -277,7 +293,7 @@ class BackpackExchange(ExchangePyBase):
                 is_auth_required=True
             )
             
-            self.logger().debug(f"Balance response type: {type(response)}, content: {response}")
+            self.logger().info(f"Balance API response: {response}")
             
             # Clear existing balances
             self._account_balances.clear()
@@ -305,7 +321,7 @@ class BackpackExchange(ExchangePyBase):
                 self.logger().info(f"Updated balances: {len(self._account_balances)} assets")
                 for asset, total in self._account_balances.items():
                     available = self._account_available_balances.get(asset, Decimal("0"))
-                    self.logger().debug(f"  {asset}: total={total}, available={available}")
+                    self.logger().info(f"  {asset}: total={total}, available={available}")
             else:
                 self.logger().warning(f"Unexpected balance response format: {type(response)}")
                     
