@@ -1,7 +1,7 @@
 import logging
 import os
 from decimal import Decimal
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from pydantic import Field
 
@@ -30,39 +30,44 @@ class BackpackSimpleBuy(ScriptStrategyBase):
     3. Trades 0.1 SOL by default
     """
 
-    # Define markets as a class attribute
-    markets = {}
+    # Define markets as a class attribute - default to backpack/SOL-USDC
+    markets = {"backpack": {"SOL-USDC"}}
     create_timestamp = 0
 
     @classmethod
     def init_markets(cls, config: BackpackSimpleBuyConfig):
         cls.markets = {config.exchange: {config.trading_pair}}
 
-    def __init__(self, connectors: Dict[str, ConnectorBase], config: BackpackSimpleBuyConfig):
+    def __init__(self, connectors: Dict[str, ConnectorBase], config: Optional[BackpackSimpleBuyConfig] = None):
         super().__init__(connectors)
-        self.config = config
+        self.config = config or BackpackSimpleBuyConfig()
+        self.logger().info(f"BackpackSimpleBuy initialized with config: exchange={self.config.exchange}, "
+                          f"trading_pair={self.config.trading_pair}, order_amount={self.config.order_amount}")
 
     def on_tick(self):
         """
         Called every second. Checks if it's time to refresh orders.
         """
-        if self.create_timestamp <= self.current_timestamp:
-            # Cancel all existing orders
-            self.cancel_all_orders()
-            
-            # Create and place new order
-            proposal = self.create_proposal()
-            if proposal:
-                proposal_adjusted = self.adjust_proposal_to_budget(proposal)
-                if proposal_adjusted:
-                    self.place_orders(proposal_adjusted)
-                    self.logger().info(f"Placed buy order for {self.config.order_amount} SOL at "
-                                     f"{(1 - self.config.price_discount) * 100}% of mid price")
-                else:
-                    self.logger().warning("Insufficient balance to place order")
-            
-            # Set next refresh time
-            self.create_timestamp = self.config.order_refresh_time + self.current_timestamp
+        try:
+            if self.create_timestamp <= self.current_timestamp:
+                # Cancel all existing orders
+                self.cancel_all_orders()
+                
+                # Create and place new order
+                proposal = self.create_proposal()
+                if proposal:
+                    proposal_adjusted = self.adjust_proposal_to_budget(proposal)
+                    if proposal_adjusted:
+                        self.place_orders(proposal_adjusted)
+                        self.logger().info(f"Placed buy order for {self.config.order_amount} SOL at "
+                                         f"{(1 - self.config.price_discount) * 100}% of mid price")
+                    else:
+                        self.logger().warning("Insufficient balance to place order")
+                
+                # Set next refresh time
+                self.create_timestamp = self.config.order_refresh_time + self.current_timestamp
+        except Exception as e:
+            self.logger().error(f"Error in on_tick: {e}", exc_info=True)
 
     def create_proposal(self) -> List[OrderCandidate]:
         """
@@ -144,9 +149,11 @@ class BackpackSimpleBuy(ScriptStrategyBase):
         """
         try:
             active_orders = self.get_active_orders(connector_name=self.config.exchange)
-            for order in active_orders:
-                self.cancel(self.config.exchange, order.trading_pair, order.client_order_id)
-                self.logger().info(f"Cancelled order {order.client_order_id}")
+            if active_orders:
+                self.logger().info(f"Cancelling {len(active_orders)} active order(s)")
+                for order in active_orders:
+                    self.cancel(self.config.exchange, order.trading_pair, order.client_order_id)
+                    self.logger().debug(f"Cancelled order {order.client_order_id}")
         except Exception as e:
             self.logger().error(f"Error cancelling orders: {e}")
 
