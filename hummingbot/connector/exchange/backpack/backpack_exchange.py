@@ -2,7 +2,7 @@ import asyncio
 import json
 import time
 from decimal import Decimal
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set, Tuple
 
 from hummingbot.connector.exchange.backpack import (
     backpack_constants as CONSTANTS,
@@ -643,7 +643,7 @@ class BackpackExchange(ExchangePyBase):
                           trade_type: TradeType,
                           order_type: OrderType,
                           price: Decimal,
-                          **kwargs) -> str:
+                          **kwargs) -> Tuple[str, float]:
         """
         Place an order on the exchange
         
@@ -1362,11 +1362,10 @@ class BackpackExchange(ExchangePyBase):
         """
         Update trading fees from the exchange.
         
-        For Backpack Exchange, since we're implementing public API only,
-        we'll use default fees. In a full implementation with private API access,
-        this would fetch the actual fee structure based on the user's tier.
+        Backpack Exchange does not provide a public API endpoint for fee information.
+        Trading fees are applied during order execution and included in trade updates.
+        Default fee structure: Maker: 0.02%, Taker: 0.04%
         """
-        # Default fee structure for Backpack Exchange
-        # Maker: 0.02%, Taker: 0.04%
-        # These are example values - actual fees should be fetched from the exchange
+        # Backpack does not expose a fees endpoint in their API
+        # Fees are returned with each trade execution
         pass

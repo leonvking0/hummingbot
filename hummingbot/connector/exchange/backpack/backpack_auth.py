@@ -102,19 +102,15 @@ class BackpackAuth(AuthBase):
         timestamp = int(time.time() * 1000)
         window = CONSTANTS.DEFAULT_REQUEST_WINDOW
 
-        # Store the method temporarily for instruction determination
-        self._current_method = request.method.name if hasattr(request, 'method') else None
+        # Get the HTTP method from the request
+        method = request.method.name if hasattr(request, 'method') else None
         
-        # Determine instruction based on endpoint
-        instruction = self._get_instruction_for_endpoint(request.url)
+        # Determine instruction based on endpoint and method
+        instruction = self._get_instruction_for_endpoint(request.url, method)
         
         # Log authentication details for debugging
-        self._logger.debug(f"Authenticating request: URL={request.url}, Method={self._current_method}, "
+        self._logger.debug(f"Authenticating request: URL={request.url}, Method={method}, "
                           f"Instruction={instruction}")
-        
-        # Clean up temporary method storage
-        if hasattr(self, '_current_method'):
-            delattr(self, '_current_method')
 
         # Get parameters from either body or query
         params = None
@@ -156,8 +152,8 @@ class BackpackAuth(AuthBase):
             CONSTANTS.HEADER_WINDOW: str(window),
         }
         
-        # Log headers (without signature) for debugging
-        self._logger.debug(f"Auth headers: API_KEY={self.api_key[:10]}..., "
+        # Log headers (without sensitive data) for debugging
+        self._logger.debug(f"Auth headers: API_KEY=<hidden>, "
                           f"TIMESTAMP={timestamp}, WINDOW={window}")
 
         if request.headers is None:
@@ -205,11 +201,12 @@ class BackpackAuth(AuthBase):
             ]
         }
 
-    def _get_instruction_for_endpoint(self, url: str) -> str:
+    def _get_instruction_for_endpoint(self, url: str, method: Optional[str] = None) -> str:
         """
         Determine the instruction type based on the API endpoint
 
         :param url: API endpoint URL
+        :param method: HTTP method (GET, POST, DELETE, etc.)
         :return: Instruction type
         """
         # Map endpoints to instructions
@@ -231,11 +228,10 @@ class BackpackAuth(AuthBase):
         # Special handling for order-related endpoints
         if path.endswith("/order") or path.endswith("/order/execute"):
             # Check if this is a POST (execute) or DELETE (cancel) request
-            # This will be determined by the context when called
-            if hasattr(self, '_current_method'):
-                if self._current_method == 'POST':
+            if method:
+                if method == 'POST':
                     return "orderExecute"
-                elif self._current_method == 'DELETE':
+                elif method == 'DELETE':
                     return "orderCancel"
         
         # Check endpoints in order of specificity (longer paths first)
