@@ -48,17 +48,20 @@ class BackpackExchange(ExchangePyBase):
         trading_pairs: Optional[List[str]] = None,
         trading_required: bool = False,
         domain: str = CONSTANTS.DEFAULT_DOMAIN,
+        demo_mode: bool = False,
     ):
         self._api_key = api_key
         self._api_secret = api_secret
         self._domain = domain
         self._trading_pairs = trading_pairs or []
         self._trading_required = trading_required
+        self._demo_mode = demo_mode or (not api_key and not api_secret)
         
         # Debug logging
         self.logger().info(f"BackpackExchange initialized, "
                           f"api_key={'provided' if api_key else 'empty'}, "
                           f"trading_required={trading_required}, "
+                          f"demo_mode={self._demo_mode}, "
                           f"trading_pairs={trading_pairs}")
         
         super().__init__(client_config_map)
@@ -245,12 +248,25 @@ class BackpackExchange(ExchangePyBase):
         """
         Update account balances from the exchange
         """
-        self.logger().debug(f"_update_balances called, is_trading_required={self.is_trading_required}")
+        self.logger().debug(f"_update_balances called, is_trading_required={self.is_trading_required}, demo_mode={self._demo_mode}")
         
         if not self.is_trading_required:
             # Set empty balances for public-only mode
             self._account_balances = {}
             self._account_available_balances = {}
+            return
+        
+        # In demo mode, provide mock balances
+        if self._demo_mode:
+            self.logger().info("Demo mode: Using mock balances")
+            self._account_balances = {
+                "USDC": Decimal("10000"),
+                "SOL": Decimal("10"),
+            }
+            self._account_available_balances = {
+                "USDC": Decimal("10000"),
+                "SOL": Decimal("10"),
+            }
             return
         
         # Fetch balances from the exchange
@@ -268,22 +284,30 @@ class BackpackExchange(ExchangePyBase):
             self._account_available_balances.clear()
             
             # Parse balance data
-            # Expected response format: array of balance objects
-            if isinstance(response, list):
-                for balance in response:
-                    asset = balance.get("symbol", "")
-                    if not asset:
+            # According to API docs, response format is: {"BTC": {"available": "0.1", "locked": "0", "staked": "0"}}
+            if isinstance(response, dict):
+                for asset, balance_data in response.items():
+                    if not isinstance(balance_data, dict):
+                        self.logger().warning(f"Unexpected balance format for {asset}: {balance_data}")
                         continue
                     
-                    # Total balance
-                    total = Decimal(str(balance.get("total", "0")))
-                    # Available balance (not locked in orders)
-                    available = Decimal(str(balance.get("available", "0")))
+                    # Parse balance fields
+                    available = Decimal(str(balance_data.get("available", "0")))
+                    locked = Decimal(str(balance_data.get("locked", "0")))
+                    staked = Decimal(str(balance_data.get("staked", "0")))
+                    
+                    # Total balance is sum of available, locked, and staked
+                    total = available + locked + staked
                     
                     self._account_balances[asset] = total
                     self._account_available_balances[asset] = available
                     
-            self.logger().info(f"Updated balances: {len(self._account_balances)} assets, total balances: {self._account_balances}")
+                self.logger().info(f"Updated balances: {len(self._account_balances)} assets")
+                for asset, total in self._account_balances.items():
+                    available = self._account_available_balances.get(asset, Decimal("0"))
+                    self.logger().debug(f"  {asset}: total={total}, available={available}")
+            else:
+                self.logger().warning(f"Unexpected balance response format: {type(response)}")
                     
         except Exception as e:
             self.logger().error(
@@ -310,48 +334,75 @@ class BackpackExchange(ExchangePyBase):
     async def _update_trading_rules(self):
         """Update trading rules from the exchange"""
         try:
+            self.logger().debug(f"Fetching markets from {self.trading_rules_request_path}")
             markets = await self._api_get(
                 path_url=self.trading_rules_request_path,
                 is_auth_required=False
             )
             
+            self.logger().debug(f"Markets response type: {type(markets)}, length: {len(markets) if isinstance(markets, list) else 'N/A'}")
+            
             trading_rules_list = []
-            for market in markets:
-                try:
-                    if market.get("status") != "ONLINE":
-                        continue
+            if isinstance(markets, list):
+                for market in markets:
+                    try:
+                        # According to API docs, check orderBookState instead of status
+                        order_book_state = market.get("orderBookState")
+                        if order_book_state and order_book_state not in CONSTANTS.ACTIVE_ORDER_BOOK_STATES:
+                            self.logger().debug(f"Skipping market {market.get('symbol')} with state: {order_book_state}")
+                            continue
+                            
+                        exchange_symbol = market.get("symbol", "")
+                        if not exchange_symbol:
+                            self.logger().warning(f"Market missing symbol: {market}")
+                            continue
+                            
+                        trading_pair = utils.convert_from_exchange_trading_pair(exchange_symbol)
                         
-                    exchange_symbol = market.get("symbol", "")
-                    trading_pair = utils.convert_from_exchange_trading_pair(exchange_symbol)
-                    
-                    filters = market.get("filters", {})
-                    price_filter = filters.get("price", {})
-                    quantity_filter = filters.get("quantity", {})
-                    
-                    trading_rule = TradingRule(
-                        trading_pair=trading_pair,
-                        min_order_size=Decimal(str(quantity_filter.get("minQuantity", "0.00000001"))),
-                        max_order_size=Decimal(str(quantity_filter.get("maxQuantity", "999999999"))),
-                        min_price_increment=Decimal(str(price_filter.get("tickSize", "0.00000001"))),
-                        min_base_amount_increment=Decimal(str(quantity_filter.get("stepSize", "0.00000001"))),
-                        min_quote_amount_increment=Decimal(str(price_filter.get("tickSize", "0.00000001"))),
-                        min_notional_size=Decimal("0"),  # Not provided by Backpack
-                        min_order_value=Decimal("0"),  # Not provided by Backpack
-                        supports_limit_orders=True,
-                        supports_market_orders=True,
-                    )
-                    
-                    trading_rules_list.append(trading_rule)
-                    
-                except Exception as e:
-                    self.logger().error(
-                        f"Error parsing trading rule for {market}. Error: {str(e)}",
-                        exc_info=True
-                    )
-                    
+                        filters = market.get("filters", {})
+                        price_filter = filters.get("price", {})
+                        quantity_filter = filters.get("quantity", {})
+                        
+                        # Parse filter values with proper defaults
+                        min_price = Decimal(str(price_filter.get("minPrice", "0.00000001")))
+                        max_price = price_filter.get("maxPrice")
+                        tick_size = Decimal(str(price_filter.get("tickSize", "0.00000001")))
+                        
+                        min_quantity = Decimal(str(quantity_filter.get("minQuantity", "0.00000001")))
+                        max_quantity = quantity_filter.get("maxQuantity")
+                        step_size = Decimal(str(quantity_filter.get("stepSize", "0.00000001")))
+                        
+                        trading_rule = TradingRule(
+                            trading_pair=trading_pair,
+                            min_order_size=min_quantity,
+                            max_order_size=Decimal(str(max_quantity)) if max_quantity else Decimal("999999999"),
+                            min_price_increment=tick_size,
+                            min_base_amount_increment=step_size,
+                            min_quote_amount_increment=tick_size,
+                            min_notional_size=Decimal("0"),  # Not provided by Backpack
+                            min_order_value=Decimal("0"),  # Not provided by Backpack
+                            supports_limit_orders=True,
+                            supports_market_orders=True,
+                        )
+                        
+                        trading_rules_list.append(trading_rule)
+                        self.logger().debug(f"Added trading rule for {trading_pair}: "
+                                          f"min_qty={min_quantity}, max_qty={max_quantity}, "
+                                          f"tick_size={tick_size}, step_size={step_size}")
+                        
+                    except Exception as e:
+                        self.logger().error(
+                            f"Error parsing trading rule for market: {market}. Error: {str(e)}",
+                            exc_info=True
+                        )
+            else:
+                self.logger().warning(f"Unexpected markets response format: {type(markets)}")
+                        
             self._trading_rules.clear()
             for trading_rule in trading_rules_list:
                 self._trading_rules[trading_rule.trading_pair] = trading_rule
+            
+            self.logger().info(f"Updated trading rules for {len(self._trading_rules)} markets")
                 
         except Exception as e:
             self.logger().error(
@@ -379,6 +430,14 @@ class BackpackExchange(ExchangePyBase):
         :param price: Order price (ignored for market orders)
         :return: Exchange order ID
         """
+        # In demo mode, simulate order placement
+        if self._demo_mode:
+            self.logger().info(f"Demo mode: Simulating order placement - "
+                             f"{trade_type.name} {amount} {trading_pair} @ {price}")
+            # Generate a fake exchange order ID
+            exchange_order_id = f"DEMO-{int(time.time() * 1000)}"
+            return exchange_order_id
+            
         try:
             # Convert trading pair to exchange format
             exchange_symbol = utils.convert_to_exchange_trading_pair(trading_pair)
@@ -446,6 +505,11 @@ class BackpackExchange(ExchangePyBase):
         :param order_id: Client order ID
         :param tracked_order: In-flight order to cancel
         """
+        # In demo mode, simulate order cancellation
+        if self._demo_mode:
+            self.logger().info(f"Demo mode: Simulating order cancellation for {order_id}")
+            return True
+            
         try:
             exchange_order_id = await tracked_order.get_exchange_order_id()
             
@@ -510,14 +574,27 @@ class BackpackExchange(ExchangePyBase):
             url = web_utils.private_rest_url(path_url, self._domain)
         else:
             url = web_utils.public_rest_url(path_url, self._domain)
+        
+        try:
+            response = await rest_assistant.execute_request(
+                url=url,
+                throttler_limit_id=limit_id or path_url,
+                params=params,
+                method=RESTMethod.GET,
+                is_auth_required=is_auth_required
+            )
             
-        return await rest_assistant.execute_request(
-            url=url,
-            throttler_limit_id=limit_id or path_url,
-            params=params,
-            method=RESTMethod.GET,
-            is_auth_required=is_auth_required
-        )
+            # Log successful responses for debugging
+            if path_url in [CONSTANTS.BALANCES_PATH_URL, CONSTANTS.MARKETS_PATH_URL]:
+                self.logger().debug(f"API GET {path_url} response: {response}")
+                
+            return response
+            
+        except Exception as e:
+            # Log more details about the error
+            self.logger().error(f"API GET {path_url} failed. Auth required: {is_auth_required}, "
+                              f"Error type: {type(e).__name__}, Error: {str(e)}")
+            raise
 
     async def _api_post(self,
                        path_url: str,
@@ -571,6 +648,22 @@ class BackpackExchange(ExchangePyBase):
         tracked_orders = list(self.in_flight_orders.values())
         
         if not tracked_orders:
+            return
+        
+        # In demo mode, simulate order updates
+        if self._demo_mode:
+            for tracked_order in tracked_orders:
+                # Simulate orders being open for 30 seconds then filled
+                if self.current_timestamp - tracked_order.creation_timestamp > 30:
+                    self.logger().info(f"Demo mode: Simulating order fill for {tracked_order.client_order_id}")
+                    order_update = OrderUpdate(
+                        trading_pair=tracked_order.trading_pair,
+                        update_timestamp=self.current_timestamp,
+                        new_state=OrderState.FILLED,
+                        client_order_id=tracked_order.client_order_id,
+                        exchange_order_id=tracked_order.exchange_order_id or f"DEMO-{int(time.time() * 1000)}",
+                    )
+                    self._order_tracker.process_order_update(order_update)
             return
             
         try:

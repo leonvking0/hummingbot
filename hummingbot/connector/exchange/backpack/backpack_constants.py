@@ -43,6 +43,10 @@ ORDER_STATE_MAP = {
     "TriggerFailed": OrderState.FAILED,
 }
 
+# Order book states that indicate active trading
+# Based on actual API response: Open, Closed, PostOnly
+ACTIVE_ORDER_BOOK_STATES = ["Open"]
+
 # Rate Limits
 # Using conservative limits as exact values not specified in API doc
 RATE_LIMITS = [
