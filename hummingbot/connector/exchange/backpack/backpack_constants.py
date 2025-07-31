@@ -22,6 +22,7 @@ KLINES_PATH_URL = "/api/v1/klines"
 # Private API endpoints (for future implementation)
 ACCOUNT_PATH_URL = "/api/v1/account"
 BALANCES_PATH_URL = "/api/v1/capital"
+COLLATERAL_PATH_URL = "/api/v1/capital/collateral"
 ORDER_PATH_URL = "/api/v1/order"
 ORDERS_PATH_URL = "/api/v1/orders"
 FILLS_PATH_URL = "/api/v1/fills"
@@ -57,6 +58,7 @@ RATE_LIMITS = [
     RateLimit(limit_id=KLINES_PATH_URL, limit=10, time_interval=1),
     RateLimit(limit_id=ACCOUNT_PATH_URL, limit=10, time_interval=1),
     RateLimit(limit_id=BALANCES_PATH_URL, limit=10, time_interval=1),
+    RateLimit(limit_id=COLLATERAL_PATH_URL, limit=10, time_interval=1),
     RateLimit(limit_id=ORDER_PATH_URL, limit=10, time_interval=1),
     RateLimit(limit_id=ORDERS_PATH_URL, limit=10, time_interval=1),
     RateLimit(limit_id=FILLS_PATH_URL, limit=10, time_interval=1),

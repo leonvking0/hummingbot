@@ -179,6 +179,7 @@ class BackpackAuth(AuthBase):
         # Map endpoints to instructions
         instruction_map = {
             "/account": "accountQuery",
+            "/capital/collateral": "collateralQuery",  # Must be before /capital for correct matching
             "/capital": "balanceQuery",
             "/order": "orderQuery",
             "/orders": "orderQueryAll",
@@ -201,9 +202,11 @@ class BackpackAuth(AuthBase):
                 elif self._current_method == 'DELETE':
                     return "orderCancel"
         
-        for endpoint, instruction in instruction_map.items():
+        # Check endpoints in order of specificity (longer paths first)
+        sorted_endpoints = sorted(instruction_map.keys(), key=len, reverse=True)
+        for endpoint in sorted_endpoints:
             if endpoint in path:
-                return instruction
+                return instruction_map[endpoint]
 
         # Default instruction for unknown endpoints
         return "accountQuery"

@@ -287,17 +287,21 @@ class BackpackExchange(ExchangePyBase):
         
         # Fetch balances from the exchange
         try:
+            # First try the capital API for spot balances
             self.logger().debug(f"Fetching balances from {CONSTANTS.BALANCES_PATH_URL}")
             response = await self._api_get(
                 path_url=CONSTANTS.BALANCES_PATH_URL,
                 is_auth_required=True
             )
             
-            self.logger().info(f"Balance API response: {response}")
+            self.logger().info(f"Capital API response: {response}")
             
             # Clear existing balances
             self._account_balances.clear()
             self._account_available_balances.clear()
+            
+            # Check if we got any non-zero balances from capital API
+            has_spot_balance = False
             
             # Parse balance data
             # According to API docs, response format is: {"BTC": {"available": "0.1", "locked": "0", "staked": "0"}}
@@ -315,23 +319,128 @@ class BackpackExchange(ExchangePyBase):
                     # Total balance is sum of available, locked, and staked
                     total = available + locked + staked
                     
+                    if total > 0:
+                        has_spot_balance = True
+                    
                     self._account_balances[asset] = total
                     self._account_available_balances[asset] = available
-                    
-                self.logger().info(f"Updated balances: {len(self._account_balances)} assets")
+            
+            # If no spot balances found, try the collateral API
+            if not has_spot_balance:
+                self.logger().info("No spot balances found, checking collateral API...")
+                await self._update_balances_from_collateral()
+            else:
+                self.logger().info(f"Updated balances from capital API: {len(self._account_balances)} assets")
                 for asset, total in self._account_balances.items():
                     available = self._account_available_balances.get(asset, Decimal("0"))
                     self.logger().info(f"  {asset}: total={total}, available={available}")
-            else:
-                self.logger().warning(f"Unexpected balance response format: {type(response)}")
                     
         except Exception as e:
             self.logger().error(
                 f"Error updating balances. Error: {str(e)}",
                 exc_info=True
             )
-            # Don't raise - let the connector continue with empty balances
-            # This prevents the connector from getting stuck if balance API fails
+            # Try collateral API as fallback
+            try:
+                self.logger().info("Attempting to fetch balances from collateral API as fallback...")
+                await self._update_balances_from_collateral()
+            except Exception as collateral_error:
+                self.logger().error(
+                    f"Error fetching from collateral API: {str(collateral_error)}",
+                    exc_info=True
+                )
+                # Don't raise - let the connector continue with empty balances
+                # This prevents the connector from getting stuck if balance API fails
+
+    async def _update_balances_from_collateral(self):
+        """
+        Update account balances from the collateral API
+        This is used when the capital API returns no balances (funds are in margin/futures account)
+        """
+        try:
+            self.logger().debug(f"Fetching collateral from {CONSTANTS.COLLATERAL_PATH_URL}")
+            response = await self._api_get(
+                path_url=CONSTANTS.COLLATERAL_PATH_URL,
+                is_auth_required=True
+            )
+            
+            self.logger().info(f"Collateral API response: {response}")
+            
+            # Clear existing balances
+            self._account_balances.clear()
+            self._account_available_balances.clear()
+            
+            if isinstance(response, dict):
+                # Extract balances from collateral response
+                # Based on API docs, the response contains:
+                # - netEquityAvailable: Available equity for trading
+                # - netEquity: Total equity
+                # - collateral: Collateral breakdown by asset
+                
+                net_equity_available = Decimal(str(response.get("netEquityAvailable", "0")))
+                net_equity = Decimal(str(response.get("netEquity", "0")))
+                
+                # Check if there's a collateral breakdown by asset
+                collateral_data = response.get("collateral")
+                if isinstance(collateral_data, list):
+                    # Parse collateral array - each item contains asset info
+                    for collateral_item in collateral_data:
+                        if isinstance(collateral_item, dict):
+                            symbol = collateral_item.get("symbol", "")
+                            if symbol:
+                                # Use totalQuantity as the balance
+                                total_quantity = Decimal(str(collateral_item.get("totalQuantity", "0")))
+                                available_quantity = Decimal(str(collateral_item.get("availableQuantity", "0")))
+                                
+                                # If availableQuantity is 0, use a portion of netEquityAvailable
+                                # This handles the case where funds are in margin account
+                                if available_quantity == 0 and symbol == "USDC":
+                                    # Use the netEquityAvailable for USDC
+                                    self._account_balances[symbol] = net_equity
+                                    self._account_available_balances[symbol] = net_equity_available
+                                else:
+                                    self._account_balances[symbol] = total_quantity
+                                    self._account_available_balances[symbol] = available_quantity
+                                    
+                                self.logger().debug(f"Parsed {symbol} from collateral: total={total_quantity}, available={available_quantity}")
+                elif isinstance(collateral_data, dict):
+                    # Old format - dict mapping
+                    for asset, collateral_info in collateral_data.items():
+                        if isinstance(collateral_info, dict):
+                            # Extract value from collateral info
+                            value = Decimal(str(collateral_info.get("value", "0")))
+                            # For collateral accounts, available balance might be the collateral value
+                            self._account_balances[asset] = value
+                            self._account_available_balances[asset] = value
+                        elif isinstance(collateral_info, (str, int, float)):
+                            # If collateral_info is just a value
+                            value = Decimal(str(collateral_info))
+                            self._account_balances[asset] = value
+                            self._account_available_balances[asset] = value
+                else:
+                    # If no detailed collateral breakdown, use net equity as USDC balance
+                    # This is a reasonable assumption as USDC is often the quote currency
+                    if net_equity > 0:
+                        self.logger().info(f"No detailed collateral breakdown found, using net equity as USDC balance")
+                        self._account_balances["USDC"] = net_equity
+                        self._account_available_balances["USDC"] = net_equity_available
+                
+                self.logger().info(f"Updated balances from collateral API: {len(self._account_balances)} assets")
+                for asset, total in self._account_balances.items():
+                    available = self._account_available_balances.get(asset, Decimal("0"))
+                    self.logger().info(f"  {asset}: total={total}, available={available}")
+                
+                # Log additional collateral info for debugging
+                self.logger().info(f"Collateral account summary: netEquity={net_equity}, netEquityAvailable={net_equity_available}")
+            else:
+                self.logger().warning(f"Unexpected collateral response format: {type(response)}")
+                
+        except Exception as e:
+            self.logger().error(
+                f"Error fetching collateral balances. Error: {str(e)}",
+                exc_info=True
+            )
+            raise
 
     def _get_fee(self,
                  base_currency: str,
