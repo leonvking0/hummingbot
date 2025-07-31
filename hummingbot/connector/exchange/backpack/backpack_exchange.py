@@ -180,17 +180,10 @@ class BackpackExchange(ExchangePyBase):
 
     def _create_user_stream_data_source(self) -> UserStreamTrackerDataSource:
         """Create user stream data source"""
-        if not self._api_key or not self._api_secret:
-            # Return None for public API only mode
-            return None
-            
-        return BackpackAPIUserStreamDataSource(
-            auth=self.authenticator,
-            trading_pairs=self._trading_pairs,
-            connector=self,
-            api_factory=self._web_assistants_factory,
-            domain=self._domain
-        )
+        # For now, disable user stream even with API credentials
+        # This allows basic trading functionality without real-time updates
+        # TODO: Enable user stream once WebSocket authentication is fully tested
+        return None
     
     def _create_user_stream_tracker(self):
         """
@@ -207,6 +200,8 @@ class BackpackExchange(ExchangePyBase):
         Override parent method to handle None user_stream_tracker
         For public API only, we don't have user streams
         """
+        if not self.is_trading_required:
+            return True  # No user stream needed when trading is not required
         if self._user_stream_tracker is None:
             return True  # Consider it "initialized" for public-only
         return super()._is_user_stream_initialized()
@@ -215,7 +210,7 @@ class BackpackExchange(ExchangePyBase):
         """
         Override parent method to handle public-only implementation
         """
-        self.logger().debug(f"BackpackExchange.start_network called, is_trading_required={self.is_trading_required}")
+        self.logger().info(f"BackpackExchange.start_network called, is_trading_required={self.is_trading_required}")
         
         await self.stop_network()
         self.order_book_tracker.start()
@@ -227,9 +222,19 @@ class BackpackExchange(ExchangePyBase):
         
         # Only start trading-related tasks if trading is required
         if self.is_trading_required:
+            self.logger().info("Starting trading-related tasks...")
+            # Initialize trading rules immediately before starting polling loop
+            try:
+                await self._update_trading_rules()
+                self.logger().info(f"Trading rules initialized with {len(self._trading_rules)} rules")
+            except Exception as e:
+                self.logger().error(f"Failed to initialize trading rules: {e}", exc_info=True)
+                
             self._trading_rules_polling_task = safe_ensure_future(self._trading_rules_polling_loop())
             self._trading_fees_polling_task = safe_ensure_future(self._trading_fees_polling_loop())
             self._status_polling_task = safe_ensure_future(self._status_polling_loop())
+            self.logger().info("Started polling tasks")
+            
             # Skip user stream tracker for public-only implementation
             if self._user_stream_tracker is not None:
                 self._user_stream_tracker_task = safe_ensure_future(self._user_stream_tracker.start())
@@ -238,16 +243,55 @@ class BackpackExchange(ExchangePyBase):
     
     async def _update_balances(self):
         """
-        Override to skip balance updates in public-only mode
+        Update account balances from the exchange
         """
+        self.logger().debug(f"_update_balances called, is_trading_required={self.is_trading_required}")
+        
         if not self.is_trading_required:
             # Set empty balances for public-only mode
             self._account_balances = {}
             self._account_available_balances = {}
             return
         
-        # If trading is somehow enabled, call parent implementation
-        await super()._update_balances()
+        # Fetch balances from the exchange
+        try:
+            self.logger().debug(f"Fetching balances from {CONSTANTS.BALANCES_PATH_URL}")
+            response = await self._api_get(
+                path_url=CONSTANTS.BALANCES_PATH_URL,
+                is_auth_required=True
+            )
+            
+            self.logger().debug(f"Balance response type: {type(response)}, content: {response}")
+            
+            # Clear existing balances
+            self._account_balances.clear()
+            self._account_available_balances.clear()
+            
+            # Parse balance data
+            # Expected response format: array of balance objects
+            if isinstance(response, list):
+                for balance in response:
+                    asset = balance.get("symbol", "")
+                    if not asset:
+                        continue
+                    
+                    # Total balance
+                    total = Decimal(str(balance.get("total", "0")))
+                    # Available balance (not locked in orders)
+                    available = Decimal(str(balance.get("available", "0")))
+                    
+                    self._account_balances[asset] = total
+                    self._account_available_balances[asset] = available
+                    
+            self.logger().info(f"Updated balances: {len(self._account_balances)} assets, total balances: {self._account_balances}")
+                    
+        except Exception as e:
+            self.logger().error(
+                f"Error updating balances. Error: {str(e)}",
+                exc_info=True
+            )
+            # Don't raise - let the connector continue with empty balances
+            # This prevents the connector from getting stuck if balance API fails
 
     def _get_fee(self,
                  base_currency: str,
