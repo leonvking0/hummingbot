@@ -1,0 +1,111 @@
+########################################################
+### Backpack Cross Exchange Market Making Config     ###
+########################################################
+
+# This template configures cross-exchange market making between
+# Backpack Exchange and another exchange.
+
+template_version: 1
+strategy: cross_exchange_market_making
+
+# Maker Exchange Configuration
+# Exchange where the bot will place maker orders
+maker_exchange: backpack
+
+# Trading pair on maker exchange
+maker_market: SOL-USDC
+
+# Taker Exchange Configuration  
+# Exchange where the bot will place taker orders for hedging
+taker_exchange: binance
+
+# Trading pair on taker exchange
+taker_market: SOL-USDT
+
+# Order Size Configuration
+# Size of orders in base currency
+order_amount: 0.5
+
+# Profitability Settings
+# Minimum profitability required to place orders (0.003 = 0.3%)
+min_profitability: 0.003
+
+# Spread and Order Management
+# Maximum number of order adjustments per refresh cycle
+order_size_taker_volume_factor: 0.25
+order_size_taker_balance_factor: 0.995
+order_size_portfolio_ratio_limit: 0.1667
+
+# Anti-Hysteresis Settings
+# Minimum spread change required to update orders
+anti_hysteresis_duration: 60
+anti_hysteresis_spread_changes: 0.0002
+
+# Order Refresh and Limits
+# Time between order refreshes (seconds)
+limit_order_min_expiration: 130
+
+# Maximum number of active maker orders
+top_depth_tolerance: 0
+
+# Active order cancellation
+# Cancel orders if spread exceeds this threshold
+cancel_order_threshold: 0.05
+
+# Remove orders on crossing
+# Cancel maker orders when they cross the order book
+active_order_canceling: true
+
+# Rate Limits and Adjustments
+# Adjust orders based on filled amounts
+adjust_order_enabled: true
+
+# Use taker market for mid-price calculation
+use_oracle_conversion_rate: true
+
+# Conversion rate adjustments
+taker_to_maker_base_conversion_rate: 1.0
+taker_to_maker_quote_conversion_rate: 1.0
+
+# Slippage Protection
+# Buffer for slippage on taker orders (0.01 = 1%)
+slippage_buffer: 0.005
+
+# Debug Mode
+# Enable detailed logging for troubleshooting
+debug_mode: false
+
+# Risk Management
+# Enable kill switch on loss threshold
+kill_switch_enabled: false
+kill_switch_rate: -0.1
+
+# Order Amount Override
+# Override order amount based on balance
+order_amount_shape_factor: 0.0
+
+# Advanced Settings
+# Wait time before placing orders on startup
+startup_delay: 5
+
+# Price Source Configuration
+# Use order book for pricing (vs last traded price)
+use_order_book: true
+
+# Price Source Weights
+# Weight given to each price source
+price_source_exchange: null
+price_source_market: null
+price_source_custom_api: null
+price_type: mid_price
+
+# Should wait for order fills on taker
+should_wait_order_cancel_confirmation: true
+
+# Notes for Backpack Exchange:
+# 1. Ensure both exchanges have sufficient balance
+# 2. Account for network latency between exchanges
+# 3. Consider fee differences between maker and taker exchanges
+# 4. Monitor rate limits on both exchanges
+# 5. Backpack has competitive maker fees - good for maker side
+# 6. Ensure quote currency conversion if different (USDC vs USDT)

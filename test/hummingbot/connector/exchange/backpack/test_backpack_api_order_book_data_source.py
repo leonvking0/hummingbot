@@ -339,6 +339,101 @@ class TestBackpackAPIOrderBookDataSource(unittest.TestCase):
         
         return ws
 
+    @patch("aiohttp.ClientSession.ws_connect")
+    async def test_websocket_reconnection_with_exponential_backoff(self, ws_connect_mock):
+        """Test WebSocket reconnection with exponential backoff"""
+        # Create a mock that fails first 3 times, then succeeds
+        connection_attempts = []
+        
+        async def mock_connect(*args, **kwargs):
+            connection_attempts.append(time.time())
+            attempt_num = len(connection_attempts)
+            
+            if attempt_num <= 3:
+                raise ConnectionError(f"Connection attempt {attempt_num} failed")
+            
+            # Return successful connection
+            return self.create_websocket_mock()
+        
+        ws_connect_mock.side_effect = mock_connect
+        
+        # Start listening (in background)
+        listen_task = asyncio.create_task(self.data_source.listen_for_subscriptions())
+        
+        try:
+            # Wait for reconnection attempts
+            await asyncio.sleep(10)
+            
+            # Verify exponential backoff timing
+            self.assertGreaterEqual(len(connection_attempts), 4)
+            
+            # Check that delays increase exponentially (allowing some variance)
+            if len(connection_attempts) >= 3:
+                delay1 = connection_attempts[1] - connection_attempts[0]
+                delay2 = connection_attempts[2] - connection_attempts[1]
+                
+                # Second delay should be approximately double the first
+                self.assertGreater(delay2, delay1 * 1.5)
+                
+        finally:
+            listen_task.cancel()
+            try:
+                await listen_task
+            except asyncio.CancelledError:
+                pass
+
+    @patch("aiohttp.ClientSession.ws_connect")
+    async def test_connection_health_monitoring(self, ws_connect_mock):
+        """Test connection health monitoring detects stale connections"""
+        ws_mock = self.create_websocket_mock()
+        ws_connect_mock.return_value = ws_mock
+        
+        # Reduce timeouts for faster testing
+        self.data_source._connection_timeout = 2.0  # 2 seconds
+        self.data_source._health_check_interval = 0.5  # 0.5 seconds
+        
+        listen_task = asyncio.create_task(self.data_source.listen_for_subscriptions())
+        
+        try:
+            # Wait for connection to establish
+            await asyncio.sleep(0.5)
+            
+            # Send initial message to establish connection
+            test_message = {
+                "stream": f"depth.{self.exchange_trading_pair}",
+                "data": {
+                    "e": "depth",
+                    "E": int(time.time() * 1e6),
+                    "s": self.exchange_trading_pair,
+                    "U": 100,
+                    "u": 101,
+                    "b": [],
+                    "a": []
+                }
+            }
+            self.ws_message_queue.put_nowait(json.dumps(test_message))
+            
+            # Wait a bit, connection should still be healthy
+            await asyncio.sleep(1.0)
+            
+            # Verify connection is still active
+            self.assertIsNotNone(self.data_source._ws_assistant)
+            
+            # Now wait without sending messages to trigger health check failure
+            await asyncio.sleep(3.0)
+            
+            # Connection should have been detected as stale and reconnection attempted
+            # Check logs for stale connection message
+            stale_logs = [log for log in self.log_records if "stale" in log.getMessage()]
+            self.assertGreater(len(stale_logs), 0)
+            
+        finally:
+            listen_task.cancel()
+            try:
+                await listen_task
+            except asyncio.CancelledError:
+                pass
+
 
 if __name__ == "__main__":
     unittest.main()

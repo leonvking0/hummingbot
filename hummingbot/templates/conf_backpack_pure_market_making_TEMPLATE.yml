@@ -1,0 +1,95 @@
+########################################################
+###   Backpack Pure Market Making Strategy Config    ###
+########################################################
+
+# This is a template configuration file for the pure market making strategy
+# using the Backpack Exchange connector.
+
+template_version: 1
+strategy: pure_market_making
+
+# Exchange Parameters
+# The exchange where the bot will trade
+exchange: backpack
+
+# Trading Pair
+# The token pair to trade on Backpack Exchange
+# Format: BASE-QUOTE (e.g., SOL-USDC, BTC-USDC)
+market: SOL-USDC
+
+# Spread Configuration
+# How far from the mid price to place orders (in percentage)
+# Example: 0.1 = 0.1% spread
+bid_spread: 0.1
+ask_spread: 0.1
+
+# Minimum spread to maintain active orders
+# Orders cancelled if spread becomes less than this
+minimum_spread: 0.05
+
+# Order Refresh Settings
+# Time in seconds before cancelling and replacing orders
+order_refresh_time: 60
+
+# Maximum age for orders before mandatory refresh
+max_order_age: 1800
+
+# Tolerance for order refresh (in percentage)
+# Skip refresh if price change is within this tolerance
+order_refresh_tolerance_pct: 0.1
+
+# Order Size Configuration
+# Amount of base asset to use per order
+# Example: 0.1 SOL per order
+order_amount: 0.1
+
+# Price Band Limits (Optional)
+# Ceiling price - orders won't be placed above this
+price_ceiling: -1
+
+# Floor price - orders won't be placed below this
+price_floor: -1
+
+# Advanced Features
+# Enable dynamic price bands based on volatility
+ping_pong_enabled: false
+
+# Number of order levels to place on each side
+order_levels: 1
+
+# Distance between order levels (if order_levels > 1)
+order_level_spread: 0.1
+
+# Amount increase per level (if order_levels > 1)
+order_level_amount: 0
+
+# Position Management
+# Enable inventory skew to maintain target base balance
+inventory_skew_enabled: false
+inventory_target_base_pct: 50
+inventory_range_multiplier: 1.0
+
+# Risk Management
+# Enable kill switch on loss threshold
+kill_switch_enabled: false
+kill_switch_rate: -0.1
+
+# Stop loss feature
+stop_loss_enabled: false
+stop_loss_limit: -0.03
+
+# Trading Time
+# Enable time-based trading windows
+start_time: null
+end_time: null
+
+# Demo Mode
+# Set to true to use paper trading (no real orders)
+# Useful for testing strategies without risk
+is_demo: false
+
+# Notes for Backpack Exchange:
+# 1. Ensure you have configured API keys in conf/connectors/backpack.yml
+# 2. Minimum order sizes vary by trading pair - check exchange rules
+# 3. Backpack uses underscore format (SOL_USDC) but Hummingbot uses dash format (SOL-USDC)
+# 4. ED25519 authentication is required - ensure your API secret is base64 encoded

@@ -40,6 +40,18 @@ class BackpackAPIOrderBookDataSource(OrderBookTrackerDataSource):
         self._trading_pairs = trading_pairs
         self._snapshot_msg: Dict[str, OrderBookMessage] = {}
         self._ws_assistant = None
+        
+        # Reconnection strategy parameters
+        self._reconnect_delay = 1.0  # Start with 1 second delay
+        self._max_reconnect_delay = 60.0  # Maximum 60 seconds delay
+        self._reconnect_factor = 2.0  # Exponential backoff factor
+        self._consecutive_failures = 0  # Track consecutive connection failures
+        
+        # Connection health monitoring
+        self._last_message_time = 0.0  # Timestamp of last received message
+        self._connection_timeout = 120.0  # 2 minutes without messages = stale connection
+        self._health_check_task: Optional[asyncio.Task] = None
+        self._health_check_interval = 30.0  # Check connection health every 30 seconds
 
     @classmethod
     def logger(cls) -> HummingbotLogger:
@@ -254,6 +266,9 @@ class BackpackAPIOrderBookDataSource(OrderBookTrackerDataSource):
         Process messages from websocket
         """
         async for ws_response in websocket_assistant.iter_messages():
+            # Update last message time for health monitoring
+            self._last_message_time = time.time()
+            
             data = ws_response.data
             if isinstance(data, dict) and data.get("stream"):
                 channel = self._channel_originating_message(data)
@@ -262,11 +277,108 @@ class BackpackAPIOrderBookDataSource(OrderBookTrackerDataSource):
                 elif channel == self._trade_messages_queue_key:
                     await self._parse_trade_message(data, self._message_queue[channel])
 
+    async def _monitor_connection_health(self, ws: WSAssistant):
+        """
+        Monitor the health of the WebSocket connection.
+        Raises ConnectionError if no messages received within timeout period.
+        """
+        while True:
+            try:
+                await asyncio.sleep(self._health_check_interval)
+                
+                # Check if connection is stale
+                time_since_last_message = time.time() - self._last_message_time
+                if time_since_last_message > self._connection_timeout:
+                    raise ConnectionError(
+                        f"Connection appears stale. No messages received for {time_since_last_message:.1f} seconds"
+                    )
+                
+                # Log connection health status
+                self.logger().debug(
+                    f"Connection health check passed. Last message received {time_since_last_message:.1f} seconds ago"
+                )
+                
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                self.logger().warning(f"Connection health check failed: {str(e)}")
+                raise
+
     async def _on_order_stream_interruption(self, websocket_assistant: Optional[WSAssistant]):
         """Clean up on websocket interruption"""
+        # Cancel health check task if running
+        if self._health_check_task and not self._health_check_task.done():
+            self._health_check_task.cancel()
+            try:
+                await self._health_check_task
+            except asyncio.CancelledError:
+                pass
+        
         if websocket_assistant:
             await websocket_assistant.disconnect()
         self._ws_assistant = None
+
+    async def listen_for_subscriptions(self):
+        """
+        Connects to the trade events and order diffs websocket endpoints and listens to the messages sent by the
+        exchange. Each message is stored in its own queue.
+        
+        This implementation includes exponential backoff for reconnection attempts.
+        """
+        ws: Optional[WSAssistant] = None
+        while True:
+            try:
+                # Calculate current reconnection delay
+                current_delay = min(
+                    self._reconnect_delay * (self._reconnect_factor ** self._consecutive_failures),
+                    self._max_reconnect_delay
+                )
+                
+                # If this is a reconnection attempt, wait before reconnecting
+                if self._consecutive_failures > 0:
+                    self.logger().warning(
+                        f"WebSocket disconnected. Attempting reconnection #{self._consecutive_failures} "
+                        f"in {current_delay:.1f} seconds..."
+                    )
+                    await self._sleep(current_delay)
+                
+                # Connect to WebSocket
+                self.logger().info("Connecting to Backpack WebSocket...")
+                ws = await self._connected_websocket_assistant()
+                self._ws_assistant = ws
+                
+                # Subscribe to channels
+                await self._subscribe_channels(ws)
+                self.logger().info("Successfully connected and subscribed to WebSocket channels")
+                
+                # Reset failure count and initialize health monitoring on successful connection
+                self._consecutive_failures = 0
+                self._last_message_time = time.time()
+                
+                # Start health monitoring task
+                self._health_check_task = asyncio.create_task(self._monitor_connection_health(ws))
+                
+                # Process messages
+                await self._process_websocket_messages(websocket_assistant=ws)
+                
+            except asyncio.CancelledError:
+                raise
+            except ConnectionError as connection_exception:
+                self._consecutive_failures += 1
+                self.logger().warning(
+                    f"WebSocket connection error ({connection_exception}). "
+                    f"Total consecutive failures: {self._consecutive_failures}"
+                )
+            except Exception as e:
+                self._consecutive_failures += 1
+                self.logger().exception(
+                    f"Unexpected error in WebSocket connection. "
+                    f"Total consecutive failures: {self._consecutive_failures}. "
+                    f"Error: {str(e)}"
+                )
+            finally:
+                await self._on_order_stream_interruption(websocket_assistant=ws)
+                ws = None
 
     async def listen_for_trades(self, ev_loop: asyncio.AbstractEventLoop, output: asyncio.Queue):
         """

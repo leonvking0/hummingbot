@@ -1,0 +1,95 @@
+########################################################
+###     Backpack DCA Strategy Configuration          ###
+########################################################
+
+# Dollar Cost Averaging (DCA) strategy template for Backpack Exchange
+# This strategy places periodic buy orders to accumulate assets over time
+
+template_version: 1
+strategy: fixed_grid
+
+# Exchange Configuration
+exchange: backpack
+
+# Trading pair to accumulate
+# Format: BASE-QUOTE (e.g., SOL-USDC, BTC-USDC)
+market: SOL-USDC
+
+# DCA Order Configuration
+# Order side (buy for accumulation, sell for distribution)
+order_side: buy
+
+# Amount per DCA order (in base currency)
+# Example: 0.1 SOL per order
+order_amount: 0.1
+
+# Price Levels Configuration
+# Starting price for first order
+order_start_price: 140.0
+
+# Price step between orders
+# Example: 2.0 = $2 between each order level
+order_step_price: 2.0
+
+# Number of DCA levels
+# Total orders to maintain
+n_levels: 10
+
+# Order Refresh Settings
+# Time to wait before refreshing orders (seconds)
+order_refresh_time: 3600
+
+# Maximum order age before refresh
+max_order_age: 86400
+
+# Inventory Management
+# Stop placing orders when inventory reaches this amount
+inventory_target_base_amount: 10.0
+
+# Price Band Protection
+# Don't place orders above this price
+price_ceiling: 200.0
+
+# Don't place orders below this price
+price_floor: 100.0
+
+# Advanced DCA Settings
+# Enable exponential spacing between levels
+exponential_spacing: false
+
+# Exponential base (if exponential_spacing is true)
+exponential_base: 1.1
+
+# Order Level Customization
+# Increase order size at lower prices
+order_level_amount_increment: 0.05
+
+# Time-based Execution
+# Execute orders only during specific hours (24h format)
+start_time: null
+end_time: null
+
+# Risk Management
+# Enable kill switch if losses exceed threshold
+kill_switch_enabled: false
+kill_switch_rate: -0.1
+
+# Filled Order Behavior
+# Keep filled orders in the grid (false = one-time execution)
+keep_filled_orders: false
+
+# Demo Mode
+# Enable paper trading for testing
+is_demo: false
+
+# Execution Notes for DCA on Backpack:
+# 1. Ensure sufficient quote currency (USDC) balance
+# 2. Orders execute only when market price reaches order levels
+# 3. Consider market volatility when setting price steps
+# 4. Adjust order_refresh_time based on market conditions
+# 5. Monitor total investment = order_amount × n_levels × order_step_price
+
+# Example Configuration Scenarios:
+# Conservative DCA: Large price steps, small amounts, many levels
+# Aggressive DCA: Small price steps, large amounts, few levels
+# Range DCA: Set price_floor and price_ceiling for sideways markets
