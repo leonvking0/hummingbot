@@ -1,4 +1,5 @@
 import asyncio
+import json
 import time
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set
@@ -325,15 +326,21 @@ class BackpackExchange(ExchangePyBase):
                     self._account_balances[asset] = total
                     self._account_available_balances[asset] = available
             
-            # If no spot balances found, try the collateral API
-            if not has_spot_balance:
-                self.logger().info("No spot balances found, checking collateral API...")
-                await self._update_balances_from_collateral()
-            else:
+            # Log spot balances first
+            if has_spot_balance:
                 self.logger().info(f"Updated balances from capital API: {len(self._account_balances)} assets")
                 for asset, total in self._account_balances.items():
                     available = self._account_available_balances.get(asset, Decimal("0"))
                     self.logger().info(f"  {asset}: total={total}, available={available}")
+            
+            # Always check collateral API to get complete balance picture
+            # This ensures we don't miss funds in margin/futures account
+            self.logger().info("Checking collateral API for additional balances...")
+            try:
+                await self._update_balances_from_collateral_merge()
+            except Exception as e:
+                self.logger().debug(f"Could not fetch collateral balances: {str(e)}")
+                # Continue with spot balances only if collateral fetch fails
                     
         except Exception as e:
             self.logger().error(
@@ -351,6 +358,91 @@ class BackpackExchange(ExchangePyBase):
                 )
                 # Don't raise - let the connector continue with empty balances
                 # This prevents the connector from getting stuck if balance API fails
+
+    async def _update_balances_from_collateral_merge(self):
+        """
+        Update account balances from the collateral API and merge with existing spot balances
+        This ensures we capture funds from both spot and margin/futures accounts
+        """
+        try:
+            self.logger().debug(f"Fetching collateral from {CONSTANTS.COLLATERAL_PATH_URL}")
+            response = await self._api_get(
+                path_url=CONSTANTS.COLLATERAL_PATH_URL,
+                is_auth_required=True
+            )
+            
+            self.logger().debug(f"Collateral API response: {response}")
+            
+            if isinstance(response, dict):
+                # Extract balances from collateral response
+                net_equity_available = Decimal(str(response.get("netEquityAvailable", "0")))
+                net_equity = Decimal(str(response.get("netEquity", "0")))
+                
+                # Check if there's a collateral breakdown by asset
+                collateral_data = response.get("collateral")
+                
+                if isinstance(collateral_data, list):
+                    # New format - list of collateral assets
+                    for collateral_item in collateral_data:
+                        if isinstance(collateral_item, dict):
+                            symbol = collateral_item.get("symbol")
+                            if symbol:
+                                # Get available quantity from collateral
+                                available_quantity = Decimal(str(collateral_item.get("availableQuantity", "0")))
+                                total_quantity = Decimal(str(collateral_item.get("totalQuantity", "0")))
+                                
+                                # Merge with existing balances - use the maximum available
+                                existing_total = self._account_balances.get(symbol, Decimal("0"))
+                                existing_available = self._account_available_balances.get(symbol, Decimal("0"))
+                                
+                                # For available balance, use net equity available if it's higher than spot
+                                # This handles the case where collateral shows 0 available but net equity is available
+                                if symbol == "USDC" and net_equity_available > available_quantity:
+                                    available_quantity = net_equity_available
+                                
+                                # For total balance, use the maximum (not sum) to avoid double counting
+                                # For available balance, use the maximum available from either account
+                                final_total = max(existing_total, total_quantity)
+                                final_available = max(existing_available, available_quantity)
+                                
+                                self._account_balances[symbol] = final_total
+                                self._account_available_balances[symbol] = final_available
+                                
+                                if final_total > existing_total or final_available > existing_available:
+                                    self.logger().info(f"Updated {symbol} from collateral - "
+                                                     f"Spot: total={existing_total}, available={existing_available} | "
+                                                     f"Collateral: total={total_quantity}, available={available_quantity} | "
+                                                     f"Final: total={final_total}, available={final_available}")
+                else:
+                    # If no detailed breakdown but we have net equity, use it for USDC
+                    if net_equity > 0:
+                        existing_total = self._account_balances.get("USDC", Decimal("0"))
+                        existing_available = self._account_available_balances.get("USDC", Decimal("0"))
+                        
+                        # Use maximum values
+                        final_total = max(existing_total, net_equity)
+                        final_available = max(existing_available, net_equity_available)
+                        
+                        if final_total > existing_total or final_available > existing_available:
+                            self._account_balances["USDC"] = final_total
+                            self._account_available_balances["USDC"] = final_available
+                            self.logger().info(f"Updated USDC from collateral net equity - "
+                                             f"Final: total={final_total}, available={final_available}")
+                
+                # Log final merged balances
+                self.logger().info(f"Final merged balances: {len(self._account_balances)} assets")
+                for asset, total in self._account_balances.items():
+                    available = self._account_available_balances.get(asset, Decimal("0"))
+                    self.logger().info(f"  {asset}: total={total}, available={available}")
+                
+                # Log collateral summary
+                self.logger().info(f"Collateral account summary: netEquity={net_equity}, netEquityAvailable={net_equity_available}")
+            else:
+                self.logger().warning(f"Unexpected collateral response format: {type(response)}")
+                
+        except Exception as e:
+            self.logger().debug(f"Could not fetch collateral balances: {str(e)}")
+            # Don't raise - continue with existing balances
 
     async def _update_balances_from_collateral(self):
         """
@@ -569,7 +661,8 @@ class BackpackExchange(ExchangePyBase):
                              f"{trade_type.name} {amount} {trading_pair} @ {price}")
             # Generate a fake exchange order ID
             exchange_order_id = f"DEMO-{int(time.time() * 1000)}"
-            return exchange_order_id
+            # Return both order ID and timestamp as expected by base class
+            return exchange_order_id, self._time_synchronizer.time()
             
         try:
             # Convert trading pair to exchange format
@@ -609,6 +702,9 @@ class BackpackExchange(ExchangePyBase):
             if "post_only" in kwargs and kwargs["post_only"]:
                 order_data["postOnly"] = True
                 
+            # Log the order request for debugging
+            self.logger().debug(f"Sending order request to {CONSTANTS.ORDER_PATH_URL}: {order_data}")
+                
             # Send order to exchange
             response = await self._api_post(
                 path_url=CONSTANTS.ORDER_PATH_URL,
@@ -616,13 +712,41 @@ class BackpackExchange(ExchangePyBase):
                 is_auth_required=True
             )
             
+            # Log the response type and content for debugging
+            self.logger().debug(f"Order response type: {type(response)}")
+            
+            # Check if response is a dictionary
+            if not isinstance(response, dict):
+                # If response is a string, log it and try to provide meaningful error
+                if isinstance(response, str):
+                    self.logger().error(f"Received string response instead of JSON: {response}")
+                    # Try to parse common error patterns
+                    if "unauthorized" in response.lower():
+                        raise ValueError("Authentication failed - please check your API credentials")
+                    elif "insufficient" in response.lower():
+                        raise ValueError("Insufficient balance or margin for this order")
+                    else:
+                        raise ValueError(f"Unexpected string response from exchange: {response}")
+                else:
+                    self.logger().error(f"Unexpected response type: {type(response)}, content: {response}")
+                    raise ValueError(f"Invalid response format from exchange: expected dict, got {type(response).__name__}")
+            
+            # Log successful response
+            self.logger().debug(f"Order response: {response}")
+            
             # Extract exchange order ID from response
             exchange_order_id = str(response.get("id", ""))
             
             if not exchange_order_id:
+                # Log the full response for debugging
+                self.logger().error(f"No order ID in response. Full response: {response}")
                 raise ValueError(f"No order ID returned from exchange: {response}")
                 
-            return exchange_order_id
+            self.logger().info(f"Successfully placed order {order_id} -> exchange order ID: {exchange_order_id}")
+            
+            # Return both exchange order ID and current timestamp
+            # Base class expects a tuple of (exchange_order_id, update_timestamp)
+            return exchange_order_id, self._time_synchronizer.time()
             
         except Exception as e:
             self.logger().error(
@@ -741,14 +865,37 @@ class BackpackExchange(ExchangePyBase):
             url = web_utils.private_rest_url(path_url, self._domain)
         else:
             url = web_utils.public_rest_url(path_url, self._domain)
+        
+        try:
+            # Log the request for debugging
+            self.logger().debug(f"API POST {path_url} request data: {data}")
             
-        return await rest_assistant.execute_request(
-            url=url,
-            throttler_limit_id=limit_id or path_url,
-            data=data,
-            method=RESTMethod.POST,
-            is_auth_required=is_auth_required
-        )
+            response = await rest_assistant.execute_request(
+                url=url,
+                throttler_limit_id=limit_id or path_url,
+                data=data,
+                method=RESTMethod.POST,
+                is_auth_required=is_auth_required
+            )
+            
+            # Log successful response for debugging
+            self.logger().debug(f"API POST {path_url} response type: {type(response)}")
+            if isinstance(response, dict):
+                self.logger().debug(f"API POST {path_url} response: {response}")
+            elif isinstance(response, str):
+                self.logger().warning(f"API POST {path_url} returned string response: {response[:200]}...")
+                
+            return response
+            
+        except json.JSONDecodeError as e:
+            self.logger().error(f"Failed to parse JSON response from {path_url}. Error: {str(e)}")
+            # Try to get the raw response text for debugging
+            raise ValueError(f"Invalid JSON response from {path_url}: {str(e)}")
+        except Exception as e:
+            # Log more details about the error
+            self.logger().error(f"API POST {path_url} failed. Auth required: {is_auth_required}, "
+                              f"Data: {data}, Error type: {type(e).__name__}, Error: {str(e)}")
+            raise
 
     async def _api_delete(self,
                          path_url: str,
@@ -863,7 +1010,7 @@ class BackpackExchange(ExchangePyBase):
                 event_type = event_message.get("e")
                 
                 if event_type in ["orderAccepted", "orderCancelled", "orderExpired", "orderFill", "orderModified"]:
-                    await self._process_order_update(event_message)
+                    await self._process_ws_order_update(event_message)
                 else:
                     self.logger().debug(f"Unknown user stream event type: {event_type}")
                     
@@ -873,7 +1020,7 @@ class BackpackExchange(ExchangePyBase):
                 self.logger().exception("Unexpected error in user stream listener")
                 await self._sleep(5.0)
     
-    async def _process_order_update(self, event_message: dict):
+    async def _process_ws_order_update(self, event_message: dict):
         """
         Process order update events from the WebSocket
         """

@@ -1,4 +1,6 @@
 import base64
+import json
+import logging
 import time
 from typing import Any, Dict, Optional
 from urllib.parse import urlencode
@@ -27,6 +29,7 @@ class BackpackAuth(AuthBase):
         self.api_key = api_key
         # Decode the base64 encoded private key
         self._signing_key = SigningKey(base64.b64decode(api_secret))
+        self._logger = logging.getLogger(__name__)
         
     @property
     def signing_key(self) -> SigningKey:
@@ -68,11 +71,20 @@ class BackpackAuth(AuthBase):
 
         # Add sorted parameters if provided
         if params:
+            # Ensure params is a dict (handle JSON string case)
+            if isinstance(params, str):
+                try:
+                    params = json.loads(params)
+                except json.JSONDecodeError:
+                    self._logger.error(f"Failed to parse params JSON: {params}")
+                    params = {}
+            
             # Sort parameters alphabetically by key
-            sorted_params = sorted(params.items())
-            param_string = urlencode(sorted_params)
-            if param_string:
-                auth_parts.append(param_string)
+            if isinstance(params, dict):
+                sorted_params = sorted(params.items())
+                param_string = urlencode(sorted_params)
+                if param_string:
+                    auth_parts.append(param_string)
 
         # Add timestamp and window
         auth_parts.append(f"timestamp={timestamp}")
@@ -96,6 +108,10 @@ class BackpackAuth(AuthBase):
         # Determine instruction based on endpoint
         instruction = self._get_instruction_for_endpoint(request.url)
         
+        # Log authentication details for debugging
+        self._logger.debug(f"Authenticating request: URL={request.url}, Method={self._current_method}, "
+                          f"Instruction={instruction}")
+        
         # Clean up temporary method storage
         if hasattr(self, '_current_method'):
             delattr(self, '_current_method')
@@ -104,8 +120,20 @@ class BackpackAuth(AuthBase):
         params = None
         if request.data:
             params = request.data
+            # If data is a JSON string, parse it back to dict
+            if isinstance(params, str):
+                try:
+                    params = json.loads(params)
+                    self._logger.debug("Parsed JSON string data to dict for authentication")
+                except json.JSONDecodeError:
+                    self._logger.error(f"Failed to parse JSON data: {params}")
+                    params = None
         elif request.params:
             params = request.params
+            
+        # Log parameters for debugging (be careful not to log sensitive data)
+        if params:
+            self._logger.debug(f"Request params: {list(params.keys()) if isinstance(params, dict) else 'non-dict params'}")
 
         # Generate auth string and signature
         auth_string = self.generate_auth_string(
@@ -114,6 +142,10 @@ class BackpackAuth(AuthBase):
             timestamp=timestamp,
             window=window
         )
+        
+        # Log auth string (without signature) for debugging
+        self._logger.debug(f"Auth string to sign: {auth_string}")
+        
         signature = self.get_signature(auth_string)
 
         # Add authentication headers
@@ -123,6 +155,10 @@ class BackpackAuth(AuthBase):
             CONSTANTS.HEADER_TIMESTAMP: str(timestamp),
             CONSTANTS.HEADER_WINDOW: str(window),
         }
+        
+        # Log headers (without signature) for debugging
+        self._logger.debug(f"Auth headers: API_KEY={self.api_key[:10]}..., "
+                          f"TIMESTAMP={timestamp}, WINDOW={window}")
 
         if request.headers is None:
             request.headers = {}
