@@ -16,10 +16,12 @@ from hummingbot.connector.exchange_py_base import ExchangePyBase
 from hummingbot.connector.trading_rule import TradingRule
 from hummingbot.connector.utils import get_new_client_order_id
 from hummingbot.core.api_throttler.async_throttler import AsyncThrottler
+from hummingbot.core.api_throttler.data_types import RateLimit
 from hummingbot.core.data_type.common import OrderType, TradeType
 from hummingbot.core.data_type.in_flight_order import InFlightOrder, OrderState, OrderUpdate, TradeUpdate
 from hummingbot.core.data_type.order_book_tracker_data_source import OrderBookTrackerDataSource
 from hummingbot.core.data_type.trade_fee import TokenAmount, TradeFeeBase
+from hummingbot.core.data_type.user_stream_tracker import UserStreamTracker
 from hummingbot.core.data_type.user_stream_tracker_data_source import UserStreamTrackerDataSource
 from hummingbot.core.utils.async_utils import safe_ensure_future
 from hummingbot.core.web_assistant.auth import AuthBase
@@ -93,7 +95,7 @@ class BackpackExchange(ExchangePyBase):
         return CONSTANTS.EXCHANGE_NAME
 
     @property
-    def rate_limits_rules(self):
+    def rate_limits_rules(self) -> List[RateLimit]:
         """Rate limit rules"""
         return CONSTANTS.RATE_LIMITS
 
@@ -200,7 +202,7 @@ class BackpackExchange(ExchangePyBase):
             )
         return None
     
-    def _create_user_stream_tracker(self):
+    def _create_user_stream_tracker(self) -> Optional[UserStreamTracker]:
         """
         Create user stream tracker
         Returns None if no API credentials are provided
@@ -261,7 +263,7 @@ class BackpackExchange(ExchangePyBase):
                 self._user_stream_event_listener_task = safe_ensure_future(self._user_stream_event_listener())
             self._lost_orders_update_task = safe_ensure_future(self._lost_orders_update_polling_loop())
     
-    async def _update_balances(self):
+    async def _update_balances(self) -> None:
         """
         Update account balances from the exchange
         """
@@ -359,7 +361,7 @@ class BackpackExchange(ExchangePyBase):
                 # Don't raise - let the connector continue with empty balances
                 # This prevents the connector from getting stuck if balance API fails
 
-    async def _update_balances_from_collateral_merge(self):
+    async def _update_balances_from_collateral_merge(self) -> None:
         """
         Update account balances from the collateral API and merge with existing spot balances
         This ensures we capture funds from both spot and margin/futures accounts
@@ -444,7 +446,7 @@ class BackpackExchange(ExchangePyBase):
             self.logger().debug(f"Could not fetch collateral balances: {str(e)}")
             # Don't raise - continue with existing balances
 
-    async def _update_balances_from_collateral(self):
+    async def _update_balances_from_collateral(self) -> None:
         """
         Update account balances from the collateral API
         This is used when the capital API returns no balances (funds are in margin/futures account)
@@ -548,7 +550,7 @@ class BackpackExchange(ExchangePyBase):
         is_maker = is_maker or (order_type == OrderType.LIMIT)
         return utils.parse_trade_fee({}, order_side, is_maker)
 
-    async def _update_trading_rules(self):
+    async def _update_trading_rules(self) -> None:
         """Update trading rules from the exchange"""
         try:
             self.logger().debug(f"Fetching markets from {self.trading_rules_request_path}")
@@ -755,7 +757,7 @@ class BackpackExchange(ExchangePyBase):
             )
             raise
 
-    async def _place_cancel(self, order_id: str, tracked_order: InFlightOrder):
+    async def _place_cancel(self, order_id: str, tracked_order: InFlightOrder) -> bool:
         """
         Cancel an order on the exchange
         
@@ -920,7 +922,7 @@ class BackpackExchange(ExchangePyBase):
             is_auth_required=is_auth_required
         )
 
-    async def _update_order_status(self):
+    async def _update_order_status(self) -> None:
         """
         Update status of all in-flight orders by querying the exchange
         """
@@ -1000,7 +1002,7 @@ class BackpackExchange(ExchangePyBase):
                 exc_info=True
             )
 
-    async def _user_stream_event_listener(self):
+    async def _user_stream_event_listener(self) -> None:
         """
         Listen to user stream events for real-time order and balance updates
         """
@@ -1020,7 +1022,7 @@ class BackpackExchange(ExchangePyBase):
                 self.logger().exception("Unexpected error in user stream listener")
                 await self._sleep(5.0)
     
-    async def _process_ws_order_update(self, event_message: dict):
+    async def _process_ws_order_update(self, event_message: Dict[str, Any]) -> None:
         """
         Process order update events from the WebSocket
         """
@@ -1225,7 +1227,7 @@ class BackpackExchange(ExchangePyBase):
             )
             raise
 
-    def _initialize_trading_pair_symbols_from_exchange_info(self, exchange_info: Dict[str, Any]):
+    def _initialize_trading_pair_symbols_from_exchange_info(self, exchange_info: Dict[str, Any]) -> None:
         """Initialize trading pair symbols"""
         # For Backpack, the symbols are the same (no conversion needed)
         # But we need to populate the symbol map for the connector to be ready
@@ -1281,7 +1283,7 @@ class BackpackExchange(ExchangePyBase):
         
         return order_update
     
-    async def _process_order_update(self, tracked_order: InFlightOrder, order_data: Dict[str, Any]):
+    async def _process_order_update(self, tracked_order: InFlightOrder, order_data: Dict[str, Any]) -> None:
         """
         Process an order update from exchange data
         
@@ -1358,7 +1360,7 @@ class BackpackExchange(ExchangePyBase):
             "ORDER DOES NOT EXIST" in error_message
         )
 
-    async def _update_trading_fees(self):
+    async def _update_trading_fees(self) -> None:
         """
         Update trading fees from the exchange.
         
