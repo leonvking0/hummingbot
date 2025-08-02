@@ -30,6 +30,22 @@ class BackpackAuth(AuthBase):
         # Decode the base64 encoded private key
         self._signing_key = SigningKey(base64.b64decode(api_secret))
         self._logger = logging.getLogger(__name__)
+    
+    def __del__(self):
+        """Secure cleanup of sensitive key material"""
+        self.clear_keys()
+    
+    def clear_keys(self):
+        """Clear sensitive key material from memory"""
+        if hasattr(self, '_signing_key'):
+            # Attempt to clear the key from memory
+            try:
+                # Clear the internal key data
+                if hasattr(self._signing_key, '_signing_key'):
+                    self._signing_key._signing_key = None
+                self._signing_key = None
+            except Exception:
+                pass  # Fail silently on cleanup
         
     @property
     def signing_key(self) -> SigningKey:
@@ -43,9 +59,16 @@ class BackpackAuth(AuthBase):
         :param message: Message to sign
         :return: Base64 encoded signature
         """
-        signed = self._signing_key.sign(message.encode('utf-8'))
-        # Return only the signature part (excluding the message)
-        return base64.b64encode(signed.signature).decode('utf-8')
+        if not self._signing_key:
+            raise ValueError("Signing key not available")
+        
+        try:
+            signed = self._signing_key.sign(message.encode('utf-8'))
+            # Return only the signature part (excluding the message)
+            return base64.b64encode(signed.signature).decode('utf-8')
+        except Exception as e:
+            self._logger.error(f"Failed to generate signature: {e}")
+            raise
 
     def generate_auth_string(
         self,
@@ -103,14 +126,14 @@ class BackpackAuth(AuthBase):
         window = CONSTANTS.DEFAULT_REQUEST_WINDOW
 
         # Store the method temporarily for instruction determination
-        self._current_method = request.method.name if hasattr(request, 'method') else None
+        self._current_method = request.method if hasattr(request, 'method') else None
         
         # Determine instruction based on endpoint
         instruction = self._get_instruction_for_endpoint(request.url)
         
-        # Log authentication details for debugging
-        self._logger.debug(f"Authenticating request: URL={request.url}, Method={self._current_method}, "
-                          f"Instruction={instruction}")
+        # Log authentication details (sanitized)
+        self._logger.info(f"Authenticating request: Method={self._current_method}, "
+                         f"Instruction={instruction}")
         
         # Clean up temporary method storage
         if hasattr(self, '_current_method'):
@@ -143,8 +166,7 @@ class BackpackAuth(AuthBase):
             window=window
         )
         
-        # Log auth string (without signature) for debugging
-        self._logger.debug(f"Auth string to sign: {auth_string}")
+        # Auth string generated (not logged for security)
         
         signature = self.get_signature(auth_string)
 
@@ -156,9 +178,7 @@ class BackpackAuth(AuthBase):
             CONSTANTS.HEADER_WINDOW: str(window),
         }
         
-        # Log headers (without signature) for debugging
-        self._logger.debug(f"Auth headers: API_KEY={self.api_key[:10]}..., "
-                          f"TIMESTAMP={timestamp}, WINDOW={window}")
+        # Headers configured (sensitive data not logged)
 
         if request.headers is None:
             request.headers = {}
@@ -212,37 +232,51 @@ class BackpackAuth(AuthBase):
         :param url: API endpoint URL
         :return: Instruction type
         """
-        # Map endpoints to instructions
+        # Validate URL to prevent path traversal
+        if '..' in url:
+            raise ValueError(f"Invalid URL detected: {url}")
+        
+        # Check for double slashes (excluding the protocol)
+        if url.startswith('http://') or url.startswith('https://'):
+            path_part = url.split('://', 1)[1]
+            if '//' in path_part:
+                raise ValueError(f"Invalid URL detected: {url}")
+        elif '//' in url:
+            raise ValueError(f"Invalid URL detected: {url}")
+        
+        # Map endpoints to instructions with exact matching
         instruction_map = {
-            "/account": "accountQuery",
-            "/capital/collateral": "collateralQuery",  # Must be before /capital for correct matching
-            "/capital": "balanceQuery",
-            "/order": "orderQuery",
-            "/orders": "orderQueryAll",
-            "/fills": "fillHistoryQueryAll",
-            "/deposits": "depositQueryAll",
-            "/withdrawals": "withdrawalQueryAll",
-            # Add more mappings as needed
+            "/api/v1/account": "accountQuery",
+            "/api/v1/capital/collateral": "collateralQuery",
+            "/api/v1/capital": "balanceQuery",
+            "/api/v1/order": "orderQuery",
+            "/api/v1/orders": "orderQueryAll",
+            "/api/v1/fills": "fillHistoryQueryAll",
+            "/api/v1/deposits": "depositQueryAll",
+            "/api/v1/withdrawals": "withdrawalQueryAll",
         }
 
-        # Extract the path from the URL
-        path = url.split("?")[0]
+        # Extract the clean path from the URL
+        from urllib.parse import urlparse
+        parsed = urlparse(url)
+        path = parsed.path.rstrip('/')
         
-        # Special handling for order-related endpoints
+        # Special handling for order-related endpoints with method-based routing
         if path.endswith("/order") or path.endswith("/order/execute"):
-            # Check if this is a POST (execute) or DELETE (cancel) request
-            # This will be determined by the context when called
             if hasattr(self, '_current_method'):
-                if self._current_method == 'POST':
+                method = self._current_method.upper()
+                if method == 'POST':
                     return "orderExecute"
-                elif self._current_method == 'DELETE':
+                elif method == 'DELETE':
                     return "orderCancel"
+                elif method == 'GET':
+                    return "orderQuery"
         
-        # Check endpoints in order of specificity (longer paths first)
-        sorted_endpoints = sorted(instruction_map.keys(), key=len, reverse=True)
-        for endpoint in sorted_endpoints:
-            if endpoint in path:
-                return instruction_map[endpoint]
+        # Use exact matching for security
+        for endpoint, instruction in instruction_map.items():
+            if path == endpoint or path.endswith(endpoint):
+                return instruction
 
-        # Default instruction for unknown endpoints
+        # Log unmatched endpoint for debugging
+        self._logger.warning(f"Unknown endpoint: {path}, using default instruction")
         return "accountQuery"

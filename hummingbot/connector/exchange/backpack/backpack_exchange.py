@@ -61,13 +61,18 @@ class BackpackExchange(ExchangePyBase):
             self._trading_required = trading_required
         else:
             self._trading_required = bool(api_key and api_secret)
-        self._demo_mode = demo_mode or (not api_key and not api_secret)
         
-        # Debug logging
-        self.logger().info(f"BackpackExchange initialized, "
-                          f"api_key={'provided' if api_key else 'empty'}, "
-                          f"trading_required={trading_required}, "
-                          f"demo_mode={self._demo_mode}, "
+        # Require explicit demo_mode flag for safety
+        self._demo_mode = demo_mode if demo_mode is not None else False
+        
+        # Validate configuration
+        if self._trading_required and not (api_key and api_secret):
+            raise ValueError("API credentials required when trading is enabled")
+        
+        # Clear logging for security
+        mode_str = "DEMO MODE" if self._demo_mode else "PRODUCTION MODE"
+        self.logger().info(f"BackpackExchange initialized in {mode_str}, "
+                          f"trading_required={self._trading_required}, "
                           f"trading_pairs={trading_pairs}")
         
         super().__init__(client_config_map)
