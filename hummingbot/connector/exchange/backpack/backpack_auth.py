@@ -126,7 +126,14 @@ class BackpackAuth(AuthBase):
         window = CONSTANTS.DEFAULT_REQUEST_WINDOW
 
         # Store the method temporarily for instruction determination
-        self._current_method = request.method if hasattr(request, 'method') else None
+        if hasattr(request, 'method'):
+            # Handle both RESTMethod enum and string values
+            if hasattr(request.method, 'value'):
+                self._current_method = request.method.value
+            else:
+                self._current_method = request.method
+        else:
+            self._current_method = None
         
         # Determine instruction based on endpoint
         instruction = self._get_instruction_for_endpoint(request.url)
@@ -264,7 +271,7 @@ class BackpackAuth(AuthBase):
         # Special handling for order-related endpoints with method-based routing
         if path.endswith("/order") or path.endswith("/order/execute"):
             if hasattr(self, '_current_method'):
-                method = self._current_method.upper()
+                method = self._current_method
                 if method == 'POST':
                     return "orderExecute"
                 elif method == 'DELETE':
