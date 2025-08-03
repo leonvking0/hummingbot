@@ -75,6 +75,16 @@ class BackpackExchange(ExchangePyBase):
                           f"trading_required={self._trading_required}, "
                           f"trading_pairs={trading_pairs}")
         
+        # Initialize order counter for unique client order IDs
+        self._order_counter = 0
+        self._order_counter_lock = None  # Will be initialized if needed for threading
+        self._order_id_mapping = {}  # Maps Hummingbot order_id to numeric client_id
+        
+        # Initialize idempotency tracking
+        self._order_placement_cache = {}  # Cache successful order placements
+        self._order_cancellation_cache = {}  # Cache successful cancellations
+        self._cache_ttl = 300  # Cache entries expire after 5 minutes
+        
         super().__init__(client_config_map)
 
     @property
@@ -170,6 +180,122 @@ class BackpackExchange(ExchangePyBase):
         """Supported order types"""
         return [OrderType.LIMIT, OrderType.MARKET]
 
+    def _validate_order_state_transition(self, order: InFlightOrder, new_state: OrderState) -> bool:
+        """
+        Validate if an order state transition is valid according to the state machine.
+        
+        This helps prevent invalid state transitions that could corrupt order tracking.
+        
+        :param order: The in-flight order
+        :param new_state: The proposed new state
+        :return: True if transition is valid, False otherwise
+        """
+        current_state = order.current_state
+        valid_transitions = CONSTANTS.VALID_ORDER_STATE_TRANSITIONS.get(current_state, [])
+        
+        # Check if transition is valid
+        if new_state not in valid_transitions:
+            # Log warning for invalid transition attempt
+            self.logger().warning(
+                f"Invalid order state transition for {order.client_order_id}: "
+                f"{current_state.name} -> {new_state.name}. "
+                f"Valid transitions: {[s.name for s in valid_transitions]}"
+            )
+            
+            # Special case: allow transitions to FAILED state from any state for error handling
+            if new_state == OrderState.FAILED:
+                self.logger().info(
+                    f"Allowing transition to FAILED state for error handling: "
+                    f"{current_state.name} -> {new_state.name}"
+                )
+                return True
+                
+            return False
+            
+        # Log successful transition
+        self.logger().debug(
+            f"Valid order state transition for {order.client_order_id}: "
+            f"{current_state.name} -> {new_state.name}"
+        )
+        return True
+    
+    def _parse_error_response(self, response: dict) -> str:
+        """
+        Parse error response from Backpack API and return human-readable message.
+        
+        :param response: Error response dictionary from API
+        :return: Human-readable error message
+        """
+        # Check if this is an error response
+        if "code" in response and "message" in response:
+            error_code = response.get("code", "")
+            error_message = response.get("message", "")
+            
+            # Try to get a more specific message from our mapping
+            try:
+                error_enum = CONSTANTS.BackpackErrorCode(error_code)
+                mapped_message = CONSTANTS.ERROR_CODE_MESSAGES.get(error_enum)
+                if mapped_message:
+                    return f"{mapped_message} (Code: {error_code})"
+            except (ValueError, KeyError):
+                pass
+            
+            # Fall back to the API message
+            return f"{error_message} (Code: {error_code})"
+        
+        # If not a standard error response, return generic message
+        return f"Unknown error response: {response}"
+    
+    def _generate_unique_client_order_id(self) -> int:
+        """
+        Generate a unique client order ID that fits in uint32 range.
+        
+        This method ensures no collisions by using a combination of:
+        - Timestamp component for rough ordering  
+        - Counter component for uniqueness
+        
+        :return: Unique client order ID as integer (fits in uint32)
+        """
+        import threading
+        
+        # Initialize lock on first use (lazy initialization)
+        if self._order_counter_lock is None:
+            self._order_counter_lock = threading.Lock()
+        
+        with self._order_counter_lock:
+            # Increment counter first
+            self._order_counter += 1
+            
+            # Use a rotating window approach:
+            # - High bits: timestamp (changes every ~100 seconds)
+            # - Low bits: counter (ensures uniqueness within the window)
+            
+            # Get timestamp in deciseconds (100ms units) for better granularity
+            # This gives us ~11.9 hours before wrapping (42949 deciseconds)
+            timestamp_part = int(time.time() * 10) % 100000  # 5 digits max
+            
+            # Use full counter range for better uniqueness
+            # With 5 digits for timestamp, we can use up to 5 digits for counter
+            # to stay under uint32 max (4,294,967,295)
+            counter_part = self._order_counter % 100000  # 5 digits max
+            
+            # Combine: timestamp (5 digits) * 100000 + counter (5 digits)
+            # Maximum value: 99999 * 100000 + 99999 = 9,999,999,999 which is > uint32
+            # So we need to be more careful...
+            
+            # Better approach: use bit shifting for cleaner separation
+            # Use 16 bits for timestamp (~1.8 hours at 100ms granularity)
+            # Use 16 bits for counter (65536 unique values)
+            timestamp_bits = (int(time.time() * 10) & 0xFFFF) << 16
+            counter_bits = self._order_counter & 0xFFFF
+            
+            client_id = timestamp_bits | counter_bits
+            
+            # Ensure it fits in uint32 range (it should by design, but be safe)
+            client_id = client_id & 0xFFFFFFFF
+            
+            return client_id
+    
     def _is_request_exception_related_to_time_synchronizer(self, request_exception: Exception) -> bool:
         """Check if exception is related to time synchronization"""
         # Implement based on Backpack's specific error messages
@@ -268,7 +394,10 @@ class BackpackExchange(ExchangePyBase):
     
     async def _update_balances(self):
         """
-        Update account balances from the exchange
+        Update account balances from the exchange.
+        
+        This method properly separates and reconciles spot and collateral balances
+        to avoid double counting and ensure accurate balance reporting.
         """
         self.logger().debug(f"_update_balances called, is_trading_required={self.is_trading_required}, demo_mode={self._demo_mode}")
         
@@ -293,76 +422,122 @@ class BackpackExchange(ExchangePyBase):
         
         # Fetch balances from the exchange
         try:
-            # First try the capital API for spot balances
-            self.logger().debug(f"Fetching balances from {CONSTANTS.BALANCES_PATH_URL}")
-            response = await self._api_get(
-                path_url=CONSTANTS.BALANCES_PATH_URL,
-                is_auth_required=True
-            )
+            # Initialize balance dictionaries to track different account types
+            spot_balances = {}
+            spot_available = {}
+            collateral_balances = {}
+            collateral_available = {}
             
-            self.logger().info(f"Capital API response: {response}")
-            
-            # Clear existing balances
-            self._account_balances.clear()
-            self._account_available_balances.clear()
-            
-            # Check if we got any non-zero balances from capital API
-            has_spot_balance = False
-            
-            # Parse balance data
-            # According to API docs, response format is: {"BTC": {"available": "0.1", "locked": "0", "staked": "0"}}
-            if isinstance(response, dict):
-                for asset, balance_data in response.items():
-                    if not isinstance(balance_data, dict):
-                        self.logger().warning(f"Unexpected balance format for {asset}: {balance_data}")
-                        continue
-                    
-                    # Parse balance fields
-                    available = Decimal(str(balance_data.get("available", "0")))
-                    locked = Decimal(str(balance_data.get("locked", "0")))
-                    staked = Decimal(str(balance_data.get("staked", "0")))
-                    
-                    # Total balance is sum of available, locked, and staked
-                    total = available + locked + staked
-                    
-                    if total > 0:
-                        has_spot_balance = True
-                    
-                    self._account_balances[asset] = total
-                    self._account_available_balances[asset] = available
-            
-            # Log spot balances first
-            if has_spot_balance:
-                self.logger().info(f"Updated balances from capital API: {len(self._account_balances)} assets")
-                for asset, total in self._account_balances.items():
-                    available = self._account_available_balances.get(asset, Decimal("0"))
-                    self.logger().info(f"  {asset}: total={total}, available={available}")
-            
-            # Always check collateral API to get complete balance picture
-            # This ensures we don't miss funds in margin/futures account
-            self.logger().info("Checking collateral API for additional balances...")
+            # Step 1: Fetch spot balances from capital API
             try:
-                await self._update_balances_from_collateral_merge()
+                self.logger().debug(f"Fetching spot balances from {CONSTANTS.BALANCES_PATH_URL}")
+                spot_response = await self._api_get(
+                    path_url=CONSTANTS.BALANCES_PATH_URL,
+                    is_auth_required=True
+                )
+                
+                self.logger().debug(f"Spot balances response: {spot_response}")
+                
+                # Parse spot balance data
+                # According to API docs, response format is: {"BTC": {"available": "0.1", "locked": "0", "staked": "0"}}
+                if isinstance(spot_response, dict):
+                    for asset, balance_data in spot_response.items():
+                        if not isinstance(balance_data, dict):
+                            self.logger().warning(f"Unexpected balance format for {asset}: {balance_data}")
+                            continue
+                        
+                        # Parse balance fields
+                        available = Decimal(str(balance_data.get("available", "0")))
+                        locked = Decimal(str(balance_data.get("locked", "0")))
+                        staked = Decimal(str(balance_data.get("staked", "0")))
+                        
+                        # Total balance is sum of available, locked, and staked
+                        total = available + locked + staked
+                        
+                        if total > 0:
+                            spot_balances[asset] = total
+                            spot_available[asset] = available
+                            self.logger().debug(f"Spot {asset}: total={total}, available={available}")
+                            
             except Exception as e:
-                self.logger().debug(f"Could not fetch collateral balances: {str(e)}")
-                # Continue with spot balances only if collateral fetch fails
+                self.logger().warning(f"Failed to fetch spot balances: {e}")
+                # Continue to try collateral balances
+            
+            # Step 2: Fetch collateral balances from collateral API
+            try:
+                self.logger().debug(f"Fetching collateral balances from {CONSTANTS.COLLATERAL_PATH_URL}")
+                collateral_response = await self._api_get(
+                    path_url=CONSTANTS.COLLATERAL_PATH_URL,
+                    is_auth_required=True
+                )
+                
+                self.logger().debug(f"Collateral response: {collateral_response}")
+                
+                if isinstance(collateral_response, dict):
+                    # Extract net equity values
+                    net_equity_available = Decimal(str(collateral_response.get("netEquityAvailable", "0")))
+                    net_equity = Decimal(str(collateral_response.get("netEquity", "0")))
+                    
+                    # Parse collateral breakdown
+                    collateral_data = collateral_response.get("collateral")
+                    if isinstance(collateral_data, list):
+                        for item in collateral_data:
+                            if isinstance(item, dict):
+                                symbol = item.get("symbol")
+                                if symbol:
+                                    total_qty = Decimal(str(item.get("totalQuantity", "0")))
+                                    available_qty = Decimal(str(item.get("availableQuantity", "0")))
+                                    
+                                    # Special handling for USDC with net equity
+                                    if symbol == "USDC" and available_qty == 0 and net_equity_available > 0:
+                                        available_qty = net_equity_available
+                                    
+                                    if total_qty > 0:
+                                        collateral_balances[symbol] = total_qty
+                                        collateral_available[symbol] = available_qty
+                                        self.logger().debug(f"Collateral {symbol}: total={total_qty}, available={available_qty}")
+                                        
+            except Exception as e:
+                self.logger().warning(f"Failed to fetch collateral balances: {e}")
+                # Continue with spot balances only
+            
+            # Step 3: Reconcile balances properly (no double counting)
+            self._account_balances = {}
+            self._account_available_balances = {}
+            
+            # Get all unique assets
+            all_assets = set(spot_balances.keys()) | set(collateral_balances.keys())
+            
+            for asset in all_assets:
+                spot_total = spot_balances.get(asset, Decimal("0"))
+                spot_avail = spot_available.get(asset, Decimal("0"))
+                coll_total = collateral_balances.get(asset, Decimal("0"))
+                coll_avail = collateral_available.get(asset, Decimal("0"))
+                
+                # Use the account with higher balance (not sum to avoid double counting)
+                # This is because funds are either in spot OR collateral, not both
+                if spot_total >= coll_total:
+                    self._account_balances[asset] = spot_total
+                    self._account_available_balances[asset] = spot_avail
+                    source = "spot"
+                else:
+                    self._account_balances[asset] = coll_total
+                    self._account_available_balances[asset] = coll_avail
+                    source = "collateral"
+                
+                self.logger().info(
+                    f"{asset} balance: total={self._account_balances[asset]}, "
+                    f"available={self._account_available_balances[asset]} (from {source})"
+                )
                     
         except Exception as e:
             self.logger().error(
                 f"Error updating balances. Error: {str(e)}",
                 exc_info=True
             )
-            # Try collateral API as fallback
-            try:
-                self.logger().info("Attempting to fetch balances from collateral API as fallback...")
-                await self._update_balances_from_collateral()
-            except Exception as collateral_error:
-                self.logger().error(
-                    f"Error fetching from collateral API: {str(collateral_error)}",
-                    exc_info=True
-                )
-                # Don't raise - let the connector continue with empty balances
-                # This prevents the connector from getting stuck if balance API fails
+            # Set empty balances on error to prevent stuck state
+            self._account_balances = {}
+            self._account_available_balances = {}
 
     async def _update_balances_from_collateral_merge(self):
         """
@@ -641,6 +816,26 @@ class BackpackExchange(ExchangePyBase):
             )
 
 
+    def _clean_expired_cache_entries(self):
+        """Remove expired entries from idempotency caches"""
+        current_time = time.time()
+        
+        # Clean placement cache
+        expired_placements = [
+            oid for oid, (_, timestamp) in self._order_placement_cache.items()
+            if current_time - timestamp > self._cache_ttl
+        ]
+        for oid in expired_placements:
+            del self._order_placement_cache[oid]
+            
+        # Clean cancellation cache
+        expired_cancellations = [
+            oid for oid, timestamp in self._order_cancellation_cache.items()
+            if current_time - timestamp > self._cache_ttl
+        ]
+        for oid in expired_cancellations:
+            del self._order_cancellation_cache[oid]
+    
     async def _place_order(self,
                           order_id: str,
                           trading_pair: str,
@@ -650,7 +845,10 @@ class BackpackExchange(ExchangePyBase):
                           price: Decimal,
                           **kwargs) -> str:
         """
-        Place an order on the exchange
+        Place an order on the exchange with idempotency protection.
+        
+        This method prevents duplicate order placement by caching successful
+        placements and returning cached results for duplicate requests.
         
         :param order_id: Client order ID
         :param trading_pair: Trading pair
@@ -660,14 +858,29 @@ class BackpackExchange(ExchangePyBase):
         :param price: Order price (ignored for market orders)
         :return: Exchange order ID
         """
+        # Clean expired cache entries periodically
+        self._clean_expired_cache_entries()
+        
+        # Check if this order was already placed successfully (idempotency check)
+        if order_id in self._order_placement_cache:
+            cached_result, cached_time = self._order_placement_cache[order_id]
+            if time.time() - cached_time < self._cache_ttl:
+                self.logger().info(
+                    f"Order {order_id} already placed (cached result). "
+                    f"Returning exchange_order_id: {cached_result[0]}"
+                )
+                return cached_result
+        
         # In demo mode, simulate order placement
         if self._demo_mode:
             self.logger().info(f"Demo mode: Simulating order placement - "
                              f"{trade_type.name} {amount} {trading_pair} @ {price}")
             # Generate a fake exchange order ID
             exchange_order_id = f"DEMO-{int(time.time() * 1000)}"
-            # Return both order ID and timestamp as expected by base class
-            return exchange_order_id, self._time_synchronizer.time()
+            result = (exchange_order_id, self._time_synchronizer.time())
+            # Cache the result
+            self._order_placement_cache[order_id] = (result, time.time())
+            return result
             
         try:
             # Convert trading pair to exchange format
@@ -691,17 +904,13 @@ class BackpackExchange(ExchangePyBase):
             else:
                 order_data["timeInForce"] = CONSTANTS.DEFAULT_TIME_IN_FORCE
                 
-            # Add client ID if we can fit it (Backpack uses uint32)
-            try:
-                # Extract numeric part from order_id if it contains prefix
-                numeric_id = order_id.split("-")[-1] if "-" in order_id else order_id
-                # Try to convert to int and check if it fits in uint32
-                client_id = int(numeric_id)
-                if 0 <= client_id <= 4294967295:  # uint32 max
-                    order_data["clientId"] = client_id
-            except (ValueError, OverflowError):
-                # If conversion fails, skip client ID
-                pass
+            # Generate unique numeric client ID for Backpack (uint32)
+            client_id = self._generate_unique_client_order_id()
+            order_data["clientId"] = client_id
+            
+            # Store mapping of Hummingbot order_id to our numeric client_id for tracking
+            # This allows us to maintain compatibility with Hummingbot's string-based system
+            self._order_id_mapping[order_id] = client_id
             
             # Add any additional parameters from kwargs
             if "post_only" in kwargs and kwargs["post_only"]:
@@ -722,22 +931,17 @@ class BackpackExchange(ExchangePyBase):
             
             # Check if response is a dictionary
             if not isinstance(response, dict):
-                # If response is a string, log it and try to provide meaningful error
-                if isinstance(response, str):
-                    self.logger().error(f"Received string response instead of JSON: {response}")
-                    # Try to parse common error patterns
-                    if "unauthorized" in response.lower():
-                        raise ValueError("Authentication failed - please check your API credentials")
-                    elif "insufficient" in response.lower():
-                        raise ValueError("Insufficient balance or margin for this order")
-                    else:
-                        raise ValueError(f"Unexpected string response from exchange: {response}")
-                else:
-                    self.logger().error(f"Unexpected response type: {type(response)}, content: {response}")
-                    raise ValueError(f"Invalid response format from exchange: expected dict, got {type(response).__name__}")
+                self.logger().error(f"Unexpected response type: {type(response)}, content: {response}")
+                raise ValueError(f"Invalid response format from exchange: expected dict, got {type(response).__name__}")
             
-            # Log successful response
+            # Log response
             self.logger().debug(f"Order response: {response}")
+            
+            # Check if this is an error response
+            if "code" in response and "message" in response:
+                error_msg = self._parse_error_response(response)
+                self.logger().error(f"Order placement failed: {error_msg}")
+                raise ValueError(error_msg)
             
             # Extract exchange order ID from response
             exchange_order_id = str(response.get("id", ""))
@@ -749,9 +953,13 @@ class BackpackExchange(ExchangePyBase):
                 
             self.logger().info(f"Successfully placed order {order_id} -> exchange order ID: {exchange_order_id}")
             
+            # Cache successful placement for idempotency
+            result = (exchange_order_id, self._time_synchronizer.time())
+            self._order_placement_cache[order_id] = (result, time.time())
+            
             # Return both exchange order ID and current timestamp
             # Base class expects a tuple of (exchange_order_id, update_timestamp)
-            return exchange_order_id, self._time_synchronizer.time()
+            return result
             
         except Exception as e:
             self.logger().error(
@@ -762,38 +970,99 @@ class BackpackExchange(ExchangePyBase):
 
     async def _place_cancel(self, order_id: str, tracked_order: InFlightOrder):
         """
-        Cancel an order on the exchange
+        Cancel an order on the exchange with retry mechanism and idempotency protection.
+        
+        This method implements a robust cancellation strategy:
+        1. Check idempotency cache to prevent duplicate cancellations
+        2. Try to get exchange_order_id with timeout
+        3. Retry with exponential backoff if needed
+        4. Fall back to client_id if exchange_order_id unavailable
         
         :param order_id: Client order ID
         :param tracked_order: In-flight order to cancel
         """
+        # Clean expired cache entries
+        self._clean_expired_cache_entries()
+        
+        # Check if this order was already cancelled (idempotency check)
+        if order_id in self._order_cancellation_cache:
+            cached_time = self._order_cancellation_cache[order_id]
+            if time.time() - cached_time < self._cache_ttl:
+                self.logger().info(f"Order {order_id} already cancelled (cached). Skipping duplicate request.")
+                return True
+        
         # In demo mode, simulate order cancellation
         if self._demo_mode:
             self.logger().info(f"Demo mode: Simulating order cancellation for {order_id}")
+            self._order_cancellation_cache[order_id] = time.time()
             return True
             
         try:
-            exchange_order_id = await tracked_order.get_exchange_order_id()
+            # Configuration for retry mechanism
+            max_retries = 3
+            initial_timeout = 2.0  # Start with 2 second timeout
+            max_timeout = 10.0     # Maximum timeout per attempt
+            retry_delay = 0.5      # Initial delay between retries
             
-            # Build cancel request payload
-            cancel_data = {
-                "symbol": utils.convert_to_exchange_trading_pair(tracked_order.trading_pair),
-                "orderId": exchange_order_id
-            }
+            cancel_data = None
+            exchange_order_id = None
             
-            # Alternatively, use clientId if available and exchange order ID is not yet known
-            if not exchange_order_id and tracked_order.client_order_id:
+            # Try to get exchange_order_id with retries
+            for attempt in range(max_retries):
                 try:
-                    # Extract numeric part from client order ID
-                    numeric_id = tracked_order.client_order_id.split("-")[-1] if "-" in tracked_order.client_order_id else tracked_order.client_order_id
-                    client_id = int(numeric_id)
-                    if 0 <= client_id <= 4294967295:  # uint32 max
+                    # Calculate timeout for this attempt (exponential backoff)
+                    timeout = min(initial_timeout * (2 ** attempt), max_timeout)
+                    
+                    self.logger().debug(
+                        f"Attempt {attempt + 1}/{max_retries} to get exchange_order_id "
+                        f"for {order_id} (timeout: {timeout}s)"
+                    )
+                    
+                    # Try to get exchange order ID with timeout
+                    exchange_order_id = await asyncio.wait_for(
+                        tracked_order.get_exchange_order_id(),
+                        timeout=timeout
+                    )
+                    
+                    if exchange_order_id:
+                        self.logger().debug(f"Got exchange_order_id: {exchange_order_id}")
                         cancel_data = {
                             "symbol": utils.convert_to_exchange_trading_pair(tracked_order.trading_pair),
-                            "clientId": client_id
+                            "orderId": exchange_order_id
                         }
-                except (ValueError, OverflowError):
-                    pass
+                        break
+                        
+                except asyncio.TimeoutError:
+                    self.logger().warning(
+                        f"Timeout waiting for exchange_order_id on attempt {attempt + 1}/{max_retries}"
+                    )
+                    
+                    if attempt < max_retries - 1:
+                        # Wait before next retry (exponential backoff)
+                        await asyncio.sleep(retry_delay * (2 ** attempt))
+                    else:
+                        # Final attempt failed, fall back to client_id
+                        self.logger().info(
+                            f"Failed to get exchange_order_id after {max_retries} attempts, "
+                            f"falling back to client_id"
+                        )
+            
+            # Fall back to clientId if we couldn't get exchange_order_id
+            if not cancel_data and tracked_order.client_order_id:
+                # Look up the numeric client_id from our mapping
+                if tracked_order.client_order_id in self._order_id_mapping:
+                    client_id = self._order_id_mapping[tracked_order.client_order_id]
+                    self.logger().info(f"Using client_id {client_id} for cancellation")
+                    cancel_data = {
+                        "symbol": utils.convert_to_exchange_trading_pair(tracked_order.trading_pair),
+                        "clientId": client_id
+                    }
+                else:
+                    # If we don't have a mapping, we can't cancel the order
+                    self.logger().error(
+                        f"Cannot cancel order {order_id}: no exchange_order_id and no client_id mapping"
+                    )
+                    raise ValueError(f"Unable to cancel order {order_id}: missing order identifiers")
             
             # Send cancel request
             response = await self._api_delete(
@@ -802,8 +1071,25 @@ class BackpackExchange(ExchangePyBase):
                 is_auth_required=True
             )
             
+            # Check if this is an error response
+            if "code" in response and "message" in response:
+                error_msg = self._parse_error_response(response)
+                self.logger().error(f"Order cancellation failed: {error_msg}")
+                
+                # Check if error indicates order was already cancelled/not found
+                error_code = response.get("code", "")
+                if error_code in ["INVALID_ORDER", "RESOURCE_NOT_FOUND"]:
+                    # Order already cancelled or doesn't exist - consider this success
+                    self.logger().info(f"Order {order_id} already cancelled or not found")
+                    return True
+                    
+                raise ValueError(error_msg)
+            
             # Check if cancellation was successful
             if response.get("status") in ["Cancelled", "Filled"]:
+                # Cache successful cancellation for idempotency
+                self._order_cancellation_cache[order_id] = time.time()
+                self.logger().info(f"Successfully cancelled order {order_id}")
                 return True
                 
             # Log any unexpected response
@@ -1288,19 +1574,28 @@ class BackpackExchange(ExchangePyBase):
     
     async def _process_order_update(self, tracked_order: InFlightOrder, order_data: Dict[str, Any]):
         """
-        Process an order update from exchange data
+        Process an order update from exchange data with state validation
         
         :param tracked_order: The tracked order to update
         :param order_data: Order data from exchange
         """
         order_update = self._create_order_update_from_exchange_order(order_data, tracked_order)
-        tracked_order.update_with_order_update(order_update)
         
-        # If order is filled, get trade updates
-        if order_update.new_state == OrderState.FILLED:
-            trade_updates = await self._all_trade_updates_for_order(tracked_order)
-            for trade_update in trade_updates:
-                tracked_order.update_with_trade_update(trade_update)
+        # Validate state transition before applying
+        if self._validate_order_state_transition(tracked_order, order_update.new_state):
+            tracked_order.update_with_order_update(order_update)
+            
+            # If order is filled, get trade updates
+            if order_update.new_state == OrderState.FILLED:
+                trade_updates = await self._all_trade_updates_for_order(tracked_order)
+                for trade_update in trade_updates:
+                    tracked_order.update_with_trade_update(trade_update)
+        else:
+            # Invalid transition - log and skip update
+            self.logger().error(
+                f"Skipping invalid order update for {tracked_order.client_order_id}: "
+                f"attempted transition from {tracked_order.current_state.name} to {order_update.new_state.name}"
+            )
     
     def _get_trade_fee_from_fill(self, fill_data: Dict[str, Any]) -> TradeFeeBase:
         """
@@ -1334,14 +1629,21 @@ class BackpackExchange(ExchangePyBase):
         - INVALID_ORDER: The order is invalid (doesn't exist or wrong format)
         - RESOURCE_NOT_FOUND: The requested resource was not found
         """
-        error_message = str(cancelation_exception).upper()
+        error_message = str(cancelation_exception)
         
-        # Check for specific Backpack error codes
+        # Check for specific Backpack error codes in the error message
+        # These are the codes we added to ORDER_NOT_FOUND_ERRORS constant
+        for error_code in ["INVALID_ORDER", "RESOURCE_NOT_FOUND"]:
+            if f"Code: {error_code}" in error_message or error_code in error_message:
+                return True
+        
+        # Also check for common error phrases
+        error_upper = error_message.upper()
         return (
-            "INVALID_ORDER" in error_message or
-            "RESOURCE_NOT_FOUND" in error_message or
-            "ORDER NOT FOUND" in error_message or
-            "UNKNOWN ORDER" in error_message
+            "ORDER NOT FOUND" in error_upper or
+            "ORDER DOES NOT EXIST" in error_upper or
+            "NO SUCH ORDER" in error_upper or
+            "UNKNOWN ORDER" in error_upper
         )
 
     def _is_order_not_found_during_status_update_error(self, status_update_exception: Exception) -> bool:
@@ -1352,15 +1654,20 @@ class BackpackExchange(ExchangePyBase):
         - INVALID_ORDER: The order is invalid (doesn't exist or wrong format)
         - RESOURCE_NOT_FOUND: The requested resource was not found
         """
-        error_message = str(status_update_exception).upper()
+        error_message = str(status_update_exception)
         
-        # Check for specific Backpack error codes
+        # Check for specific Backpack error codes in the error message
+        for error_code in ["INVALID_ORDER", "RESOURCE_NOT_FOUND"]:
+            if f"Code: {error_code}" in error_message or error_code in error_message:
+                return True
+        
+        # Also check for common error phrases
+        error_upper = error_message.upper()
         return (
-            "INVALID_ORDER" in error_message or
-            "RESOURCE_NOT_FOUND" in error_message or
-            "ORDER NOT FOUND" in error_message or
-            "UNKNOWN ORDER" in error_message or
-            "ORDER DOES NOT EXIST" in error_message
+            "ORDER NOT FOUND" in error_upper or
+            "ORDER DOES NOT EXIST" in error_upper or
+            "NO SUCH ORDER" in error_upper or
+            "UNKNOWN ORDER" in error_upper
         )
 
     async def _update_trading_fees(self):

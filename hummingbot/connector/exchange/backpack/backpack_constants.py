@@ -1,4 +1,5 @@
 import sys
+from enum import Enum
 from hummingbot.core.api_throttler.data_types import LinkedLimitWeightPair, RateLimit
 from hummingbot.core.data_type.common import OrderType, TradeType
 from hummingbot.core.data_type.in_flight_order import OrderState
@@ -111,3 +112,95 @@ ORDER_BOOK_DEPTH_LIMIT = 1000
 # This should be updated based on actual market data
 DEFAULT_PRICE_DECIMALS = 8
 DEFAULT_QUANTITY_DECIMALS = 8
+
+# Backpack API Error Codes
+class BackpackErrorCode(Enum):
+    """Backpack Exchange API error codes"""
+    ACCOUNT_LIQUIDATING = "ACCOUNT_LIQUIDATING"
+    BORROW_LIMIT = "BORROW_LIMIT"
+    BORROW_REQUIRES_LEND_REDEEM = "BORROW_REQUIRES_LEND_REDEEM"
+    FORBIDDEN = "FORBIDDEN"
+    INSUFFICIENT_FUNDS = "INSUFFICIENT_FUNDS"
+    INSUFFICIENT_MARGIN = "INSUFFICIENT_MARGIN"
+    INSUFFICIENT_SUPPLY = "INSUFFICIENT_SUPPLY"
+    INVALID_ASSET = "INVALID_ASSET"
+    INVALID_CLIENT_REQUEST = "INVALID_CLIENT_REQUEST"
+    INVALID_MARKET = "INVALID_MARKET"
+    INVALID_ORDER = "INVALID_ORDER"
+    INVALID_PRICE = "INVALID_PRICE"
+    INVALID_POSITION_ID = "INVALID_POSITION_ID"
+    INVALID_QUANTITY = "INVALID_QUANTITY"
+    INVALID_RANGE = "INVALID_RANGE"
+    INVALID_SIGNATURE = "INVALID_SIGNATURE"
+    INVALID_SOURCE = "INVALID_SOURCE"
+    INVALID_SYMBOL = "INVALID_SYMBOL"
+    INVALID_TWO_FACTOR_CODE = "INVALID_TWO_FACTOR_CODE"
+    LEND_LIMIT = "LEND_LIMIT"
+    LEND_REQUIRES_BORROW_REPAY = "LEND_REQUIRES_BORROW_REPAY"
+    MAINTENANCE = "MAINTENANCE"
+    MAX_LEVERAGE_REACHED = "MAX_LEVERAGE_REACHED"
+    NOT_IMPLEMENTED = "NOT_IMPLEMENTED"
+    ORDER_LIMIT = "ORDER_LIMIT"
+    POSITION_LIMIT = "POSITION_LIMIT"
+    PRECONDITION_FAILED = "PRECONDITION_FAILED"
+    RESOURCE_NOT_FOUND = "RESOURCE_NOT_FOUND"
+    SERVER_ERROR = "SERVER_ERROR"
+    TIMEOUT = "TIMEOUT"
+    TOO_MANY_REQUESTS = "TOO_MANY_REQUESTS"
+    TRADING_PAUSED = "TRADING_PAUSED"
+    UNAUTHORIZED = "UNAUTHORIZED"
+
+# Error code to exception message mapping
+ERROR_CODE_MESSAGES = {
+    BackpackErrorCode.ACCOUNT_LIQUIDATING: "Account is currently being liquidated",
+    BackpackErrorCode.BORROW_LIMIT: "Borrow limit exceeded",
+    BackpackErrorCode.BORROW_REQUIRES_LEND_REDEEM: "Borrow requires lend redeem",
+    BackpackErrorCode.FORBIDDEN: "Access forbidden - check permissions",
+    BackpackErrorCode.INSUFFICIENT_FUNDS: "Insufficient funds for this operation",
+    BackpackErrorCode.INSUFFICIENT_MARGIN: "Insufficient margin for this order",
+    BackpackErrorCode.INSUFFICIENT_SUPPLY: "Insufficient supply available",
+    BackpackErrorCode.INVALID_ASSET: "Invalid asset specified",
+    BackpackErrorCode.INVALID_CLIENT_REQUEST: "Invalid client request format",
+    BackpackErrorCode.INVALID_MARKET: "Invalid market specified",
+    BackpackErrorCode.INVALID_ORDER: "Invalid order - order not found or already cancelled",
+    BackpackErrorCode.INVALID_PRICE: "Invalid price specified",
+    BackpackErrorCode.INVALID_POSITION_ID: "Invalid position ID",
+    BackpackErrorCode.INVALID_QUANTITY: "Invalid quantity specified",
+    BackpackErrorCode.INVALID_RANGE: "Invalid range specified",
+    BackpackErrorCode.INVALID_SIGNATURE: "Invalid signature - check API credentials",
+    BackpackErrorCode.INVALID_SOURCE: "Invalid source specified",
+    BackpackErrorCode.INVALID_SYMBOL: "Invalid trading pair symbol",
+    BackpackErrorCode.INVALID_TWO_FACTOR_CODE: "Invalid two-factor authentication code",
+    BackpackErrorCode.LEND_LIMIT: "Lend limit exceeded",
+    BackpackErrorCode.LEND_REQUIRES_BORROW_REPAY: "Lend requires borrow repay",
+    BackpackErrorCode.MAINTENANCE: "Exchange is under maintenance",
+    BackpackErrorCode.MAX_LEVERAGE_REACHED: "Maximum leverage reached",
+    BackpackErrorCode.NOT_IMPLEMENTED: "Feature not implemented",
+    BackpackErrorCode.ORDER_LIMIT: "Order limit exceeded",
+    BackpackErrorCode.POSITION_LIMIT: "Position limit exceeded",
+    BackpackErrorCode.PRECONDITION_FAILED: "Precondition failed for this operation",
+    BackpackErrorCode.RESOURCE_NOT_FOUND: "Resource not found",
+    BackpackErrorCode.SERVER_ERROR: "Internal server error - please try again",
+    BackpackErrorCode.TIMEOUT: "Request timeout",
+    BackpackErrorCode.TOO_MANY_REQUESTS: "Rate limit exceeded - too many requests",
+    BackpackErrorCode.TRADING_PAUSED: "Trading is currently paused",
+    BackpackErrorCode.UNAUTHORIZED: "Unauthorized - check API credentials",
+}
+
+# Error codes that indicate order not found during cancellation
+ORDER_NOT_FOUND_ERRORS = {
+    BackpackErrorCode.INVALID_ORDER,
+    BackpackErrorCode.RESOURCE_NOT_FOUND,
+}
+
+# Valid order state transitions
+VALID_ORDER_STATE_TRANSITIONS = {
+    OrderState.PENDING_CREATE: [OrderState.OPEN, OrderState.FAILED, OrderState.CANCELED],
+    OrderState.OPEN: [OrderState.PARTIALLY_FILLED, OrderState.FILLED, OrderState.CANCELED, OrderState.FAILED],
+    OrderState.PARTIALLY_FILLED: [OrderState.FILLED, OrderState.CANCELED, OrderState.FAILED],
+    OrderState.FILLED: [],  # Terminal state
+    OrderState.CANCELED: [],  # Terminal state
+    OrderState.FAILED: [],  # Terminal state
+    # PENDING_CANCEL can transition back to previous state if cancellation fails
+    OrderState.PENDING_CANCEL: [OrderState.CANCELED, OrderState.OPEN, OrderState.PARTIALLY_FILLED],
+}
