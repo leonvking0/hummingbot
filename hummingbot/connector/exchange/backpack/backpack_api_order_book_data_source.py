@@ -1,5 +1,6 @@
 import asyncio
 import time
+from enum import Enum
 from typing import Any, Dict, List, Optional
 
 import aiohttp
@@ -17,6 +18,25 @@ from hummingbot.core.web_assistant.connections.data_types import RESTMethod, WSJ
 from hummingbot.core.web_assistant.web_assistants_factory import WebAssistantsFactory
 from hummingbot.core.web_assistant.ws_assistant import WSAssistant
 from hummingbot.logger import HummingbotLogger
+
+
+class WebSocketState(Enum):
+    """WebSocket connection state management"""
+    DISCONNECTED = "disconnected"
+    CONNECTING = "connecting"
+    CONNECTED = "connected"
+    DISCONNECTING = "disconnecting"
+    RECONNECTING = "reconnecting"
+    
+    @property
+    def is_connected(self):
+        """Check if state represents an active connection"""
+        return self == WebSocketState.CONNECTED
+        
+    @property
+    def can_send(self):
+        """Check if state allows sending messages"""
+        return self == WebSocketState.CONNECTED
 
 
 class BackpackAPIOrderBookDataSource(OrderBookTrackerDataSource):
@@ -40,6 +60,16 @@ class BackpackAPIOrderBookDataSource(OrderBookTrackerDataSource):
         self._trading_pairs = trading_pairs
         self._snapshot_msg: Dict[str, OrderBookMessage] = {}
         self._ws_assistant = None
+        
+        # WebSocket reliability improvements
+        self.MAX_RECONNECT_ATTEMPTS = 10
+        self.MAX_DROPPED_MESSAGES = 100
+        self._dropped_messages_count = 0
+        self._last_heartbeat = time.time()
+        self._ws_state = WebSocketState.DISCONNECTED
+        self._reconnect_task = None
+        self._heartbeat_task = None
+        self._monitor_task = None
 
     @classmethod
     def logger(cls) -> HummingbotLogger:
@@ -163,14 +193,31 @@ class BackpackAPIOrderBookDataSource(OrderBookTrackerDataSource):
 
     async def _connected_websocket_assistant(self) -> WSAssistant:
         """
-        Creates an instance of WSAssistant connected to the exchange.
+        Creates an instance of WSAssistant connected to the exchange with state management.
         """
-        ws_assistant = await self._api_factory.get_ws_assistant()
-        await ws_assistant.connect(
-            ws_url=web_utils.wss_url(self._domain),
-            ping_timeout=CONSTANTS.WS_HEARTBEAT_TIMEOUT
-        )
-        return ws_assistant
+        # Update state to connecting
+        self._set_ws_state(WebSocketState.CONNECTING)
+        
+        try:
+            ws_assistant = await self._api_factory.get_ws_assistant()
+            await ws_assistant.connect(
+                ws_url=web_utils.wss_url(self._domain),
+                ping_timeout=CONSTANTS.WS_HEARTBEAT_TIMEOUT
+            )
+            
+            # Update state to connected on successful connection
+            self._set_ws_state(WebSocketState.CONNECTED)
+            self._ws_assistant = ws_assistant
+            
+            # Start heartbeat and monitoring tasks
+            self._heartbeat_task = asyncio.create_task(self._send_heartbeat(ws_assistant))
+            self._monitor_task = asyncio.create_task(self._monitor_heartbeat())
+            
+            return ws_assistant
+        except Exception as e:
+            # Update state back to disconnected on failure
+            self._set_ws_state(WebSocketState.DISCONNECTED)
+            raise e
 
     async def _subscribe_channels(self, ws: WSAssistant):
         """
@@ -214,59 +261,246 @@ class BackpackAPIOrderBookDataSource(OrderBookTrackerDataSource):
 
     async def _parse_order_book_diff_message(self, raw_message: Dict[str, Any], message_queue: asyncio.Queue):
         """
-        Parse order book diff message and add to queue
+        Parse order book diff message and add to queue with error handling
         """
-        if "data" in raw_message and "stream" in raw_message:
+        try:
+            if "data" not in raw_message or "stream" not in raw_message:
+                self.logger().warning("Order book message missing required fields")
+                return
+                
             stream_name = raw_message["stream"]
             data = raw_message["data"]
             
+            # Validate data structure
+            if not isinstance(data, dict):
+                self.logger().warning(f"Invalid order book data type: {type(data).__name__}")
+                return
+                
             # Extract trading pair from stream name (format: depth.SOL_USDC)
             exchange_symbol = stream_name.split(".")[-1]
             trading_pair = utils.convert_from_exchange_trading_pair(exchange_symbol)
             
-            # Get timestamp from data or use current time
-            timestamp = data.get("E", time.time() * 1000) / 1e6  # Convert microseconds to seconds
+            # Get timestamp from data or use current time (fixed: use microseconds consistently)
+            timestamp = data.get("E", time.time() * 1e6) / 1e6  # Convert microseconds to seconds
             
             order_book_msg = utils.parse_order_book_diff(
                 diff_data=data,
                 trading_pair=trading_pair,
                 timestamp=timestamp
             )
-            message_queue.put_nowait(order_book_msg)
+            
+            # Handle queue overflow
+            try:
+                message_queue.put_nowait(order_book_msg)
+            except asyncio.QueueFull:
+                self.logger().warning(f"Order book message queue full for {trading_pair}, dropping message")
+                self._handle_queue_overflow(trading_pair)
+                
+        except Exception as e:
+            self.logger().error(
+                f"Error parsing order book diff message: {e}\n"
+                f"Raw message: {raw_message}",
+                exc_info=True
+            )
 
     async def _parse_trade_message(self, raw_message: Dict[str, Any], message_queue: asyncio.Queue):
         """
-        Parse trade message and add to queue
+        Parse trade message and add to queue with error handling
         """
-        if "data" in raw_message and "stream" in raw_message:
+        try:
+            if "data" not in raw_message or "stream" not in raw_message:
+                self.logger().warning("Trade message missing required fields")
+                return
+                
             stream_name = raw_message["stream"]
             data = raw_message["data"]
             
+            # Validate data structure
+            if not isinstance(data, dict):
+                self.logger().warning(f"Invalid trade data type: {type(data).__name__}")
+                return
+                
             # Extract trading pair from stream name (format: trades.SOL_USDC)
             exchange_symbol = stream_name.split(".")[-1]
             trading_pair = utils.convert_from_exchange_trading_pair(exchange_symbol)
             
             trade_msg = self._parse_trade_message_data(data, trading_pair)
-            message_queue.put_nowait(trade_msg)
+            
+            # Handle queue overflow
+            try:
+                message_queue.put_nowait(trade_msg)
+            except asyncio.QueueFull:
+                self.logger().warning(f"Trade message queue full for {trading_pair}, dropping message")
+                self._handle_queue_overflow(trading_pair)
+                
+        except Exception as e:
+            self.logger().error(
+                f"Error parsing trade message: {e}\n"
+                f"Raw message: {raw_message}",
+                exc_info=True
+            )
 
     async def _process_websocket_messages(self, websocket_assistant: WSAssistant):
         """
-        Process messages from websocket
+        Process messages from websocket with robust error handling
         """
         async for ws_response in websocket_assistant.iter_messages():
-            data = ws_response.data
-            if isinstance(data, dict) and data.get("stream"):
+            try:
+                data = ws_response.data
+                
+                # Handle non-dict data (e.g., malformed JSON)
+                if not isinstance(data, dict):
+                    self.logger().warning(f"Received non-dict WebSocket message: {type(data).__name__}")
+                    continue
+                    
+                # Check for required 'stream' field
+                if not data.get("stream"):
+                    self.logger().warning("WebSocket message missing 'stream' field")
+                    continue
+                    
                 channel = self._channel_originating_message(data)
                 if channel == self._diff_messages_queue_key:
                     await self._parse_order_book_diff_message(data, self._message_queue[channel])
                 elif channel == self._trade_messages_queue_key:
                     await self._parse_trade_message(data, self._message_queue[channel])
+                    
+            except Exception as e:
+                self.logger().error(
+                    f"Error processing WebSocket message: {e}\n"
+                    f"Message data: {ws_response.data if hasattr(ws_response, 'data') else 'N/A'}",
+                    exc_info=True
+                )
+                # Continue processing other messages instead of breaking the loop
 
     async def _on_order_stream_interruption(self, websocket_assistant: Optional[WSAssistant]):
-        """Clean up on websocket interruption"""
+        """Clean up on websocket interruption and attempt reconnection with exponential backoff"""
+        # Update state to disconnecting if not already disconnected
+        if self._ws_state != WebSocketState.DISCONNECTED:
+            self._set_ws_state(WebSocketState.DISCONNECTING)
+            
         if websocket_assistant:
             await websocket_assistant.disconnect()
         self._ws_assistant = None
+        
+        # Update state to disconnected
+        self._set_ws_state(WebSocketState.DISCONNECTED)
+        
+        # Cancel existing tasks
+        if self._heartbeat_task:
+            self._heartbeat_task.cancel()
+            self._heartbeat_task = None
+        if self._monitor_task:
+            self._monitor_task.cancel()
+            self._monitor_task = None
+            
+        # Update state to reconnecting
+        self._set_ws_state(WebSocketState.RECONNECTING)
+        
+        # Attempt reconnection with exponential backoff
+        for attempt in range(self.MAX_RECONNECT_ATTEMPTS):
+            delay = min(2 ** attempt, 30)  # Start at 1s, double each time, max 30s
+            self.logger().info(f"WebSocket reconnection attempt {attempt + 1}/{self.MAX_RECONNECT_ATTEMPTS} in {delay}s")
+            await asyncio.sleep(delay)
+            
+            try:
+                # Try to reconnect (this will handle state updates)
+                self._ws_assistant = await self._connected_websocket_assistant()
+                await self._subscribe_channels(self._ws_assistant)
+                self.logger().info("Successfully reconnected to WebSocket")
+                
+                # Reset dropped message counter on successful reconnection
+                self._dropped_messages_count = 0
+                
+                # Restart heartbeat and monitoring tasks
+                if self._ws_assistant:
+                    self._heartbeat_task = asyncio.create_task(self._send_heartbeat(self._ws_assistant))
+                    self._monitor_task = asyncio.create_task(self._monitor_heartbeat())
+                
+                break
+            except Exception as e:
+                self.logger().error(f"Reconnection attempt {attempt + 1} failed: {e}")
+                if attempt == self.MAX_RECONNECT_ATTEMPTS - 1:
+                    self.logger().critical("Max reconnection attempts reached. WebSocket connection failed.")
+                    self._set_ws_state(WebSocketState.DISCONNECTED)
+
+    def _handle_queue_overflow(self, trading_pair: str):
+        """Handle message queue overflow by tracking dropped messages"""
+        self._dropped_messages_count += 1
+        
+        if self._dropped_messages_count > self.MAX_DROPPED_MESSAGES:
+            self.logger().error(
+                f"Too many dropped messages ({self._dropped_messages_count}), "
+                "triggering WebSocket reconnection"
+            )
+            # Schedule reconnection
+            if self._ws_assistant and not self._reconnect_task:
+                self._reconnect_task = asyncio.create_task(
+                    self._on_order_stream_interruption(self._ws_assistant)
+                )
+                
+    async def _send_heartbeat(self, websocket_assistant: WSAssistant):
+        """Send periodic heartbeat to keep WebSocket connection alive"""
+        while self._ws_assistant:
+            try:
+                await asyncio.sleep(CONSTANTS.WS_HEARTBEAT_INTERVAL)
+                if self._ws_assistant:
+                    # Send ping message
+                    ping_message = {"op": "ping"}
+                    await websocket_assistant.send(WSJSONRequest(payload=ping_message))
+                    self._last_heartbeat = time.time()
+                    self.logger().debug("Sent WebSocket heartbeat ping")
+            except Exception as e:
+                self.logger().error(f"Error sending heartbeat: {e}")
+                await self._on_order_stream_interruption(websocket_assistant)
+                break
+                
+    async def _monitor_heartbeat(self):
+        """Monitor heartbeat responses and trigger reconnection on timeout"""
+        while self._ws_assistant:
+            await asyncio.sleep(CONSTANTS.WS_HEARTBEAT_TIMEOUT)
+            
+            time_since_heartbeat = time.time() - self._last_heartbeat
+            if time_since_heartbeat > CONSTANTS.WS_HEARTBEAT_TIMEOUT:
+                self.logger().warning(
+                    f"Heartbeat timeout ({time_since_heartbeat:.1f}s since last heartbeat), "
+                    "reconnecting WebSocket"
+                )
+                await self._on_order_stream_interruption(self._ws_assistant)
+                break
+                
+    async def _check_dropped_messages(self):
+        """Check if too many messages have been dropped and trigger reconnection if needed"""
+        if self._dropped_messages_count > self.MAX_DROPPED_MESSAGES:
+            self.logger().error("Too many dropped messages, reconnecting...")
+            await self._on_order_stream_interruption(self._ws_assistant)
+            
+    def _can_send_message(self) -> bool:
+        """Check if WebSocket is in a state that allows sending messages"""
+        return (
+            self._ws_assistant is not None and 
+            self._ws_state == WebSocketState.CONNECTED
+        )
+        
+    def _set_ws_state(self, new_state: WebSocketState):
+        """Set WebSocket state with validation"""
+        old_state = self._ws_state
+        
+        # Validate state transition
+        valid_transitions = {
+            WebSocketState.DISCONNECTED: [WebSocketState.CONNECTING, WebSocketState.RECONNECTING],
+            WebSocketState.CONNECTING: [WebSocketState.CONNECTED, WebSocketState.DISCONNECTED],
+            WebSocketState.CONNECTED: [WebSocketState.DISCONNECTING, WebSocketState.RECONNECTING],
+            WebSocketState.DISCONNECTING: [WebSocketState.DISCONNECTED],
+            WebSocketState.RECONNECTING: [WebSocketState.CONNECTED, WebSocketState.DISCONNECTED]
+        }
+        
+        if old_state and new_state not in valid_transitions.get(old_state, []):
+            self.logger().warning(
+                f"Invalid state transition from {old_state.value} to {new_state.value}"
+            )
+            
+        self._ws_state = new_state
+        self.logger().debug(f"WebSocket state changed from {old_state.value if old_state else 'None'} to {new_state.value}")
 
     async def listen_for_trades(self, ev_loop: asyncio.AbstractEventLoop, output: asyncio.Queue):
         """
@@ -332,7 +566,8 @@ class BackpackAPIOrderBookDataSource(OrderBookTrackerDataSource):
         :param trading_pair: Trading pair
         :return: OrderBookMessage for trade
         """
-        timestamp = trade_data.get("E", time.time() * 1000) / 1000  # Convert from microseconds
+        # Fixed: Backpack uses microseconds, convert to seconds consistently
+        timestamp = trade_data.get("E", time.time() * 1e6) / 1e6  # Convert from microseconds
         
         trade_info = {
             "trading_pair": trading_pair,
